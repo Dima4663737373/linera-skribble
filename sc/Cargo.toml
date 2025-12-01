@@ -1,0 +1,20 @@
+[package]
+name = "doodle-game"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+linera-sdk = "0.15.3"
+async-graphql = { version = "7.0.17", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "doodle_contract"
+path = "src/contract.rs"
+
+[[bin]]
+name = "doodle_service"
+path = "src/service.rs"
