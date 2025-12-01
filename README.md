@@ -1,28 +1,26 @@
 # MicroSkribbl
 
-MicroSkribbl — ончейн-версія класичної гри на Linera microchains. Усе, окрім відправки мазків на канвас, працює на блокчейні: створення кімнати, приєднання, підписки, чат, вибір слова, події, крос-ланцюгові повідомлення. Секретне слово зберігається лише на ланцюжку художника; хост його не ретранслює. Далі планується додати шифрування.
+MicroSkribbl is a blockchain-powered drawing game built on Linera microchains. All core features—except the canvas strokes—run on-chain: room creation and joining, subscriptions, chat, word selection, event handling, and cross-chain messages. The secret word lives only on the artist’s chain; the host never re-emits it.
 
-Quick tagline: MicroSkribbl is a blockchain-powered drawing game built on Linera microchains. The secret word exists only on the artist’s chain.
+## Quick Start
+- Requirements: Node.js ≥ 18, npm
+- Install: `npm i`
+- Environment (`.env`):
+  - `VITE_LINERA_FAUCET_URL=<faucet URL>`
+  - `VITE_LINERA_APPLICATION_ID=<deployed application ID>`
+- Run frontend: `npm run dev` (port `3100`)
+- Drawing driver (optional): `npm run dev:draw`
+- Run both (Windows PowerShell): `npm run dev:all`
+- Build: `npm run build`
 
-## Швидкий старт
-- Вимоги: Node.js ≥ 18, npm
-- Установка: `npm i`
-- Змінні оточення (`.env`):
-  - `VITE_LINERA_FAUCET_URL=<URL крана>`
-  - `VITE_LINERA_APPLICATION_ID=<ID розгорнутої Linera application>`
-- Запуск фронтенду: `npm run dev` (порт `3100`)
-- Драйвер малювання (опц.): `npm run dev:draw`
-- Обидва процеси (Windows PowerShell): `npm run dev:all`
-- Білд: `npm run build`
+## Smart-Contract Architecture (microchains)
+- Host chain: room state, rounds, timers, current drawer
+- Artist chain: secret word; host does not receive it
+- Player chains: chat, guessed state, points
+- Client subscribes to notifications and queries after each event (`src/components/Game.tsx:177`)
 
-## Смарт-контракти (Linera microchains)
-- Ланцюжок хоста: стан кімнати, раунди, таймер, поточний художник
-- Ланцюжок художника: секретне слово; хост не отримує його
-- Ланцюжки гравців: чат, статус «вгадав», очки
-- Клієнт підписується на нотифікації і після них робить запит стану (`src/components/Game.tsx:177`)
-
-## Контрактний API
-- Мутації:
+## Contract API (GraphQL)
+- Mutations:
   - `createRoom(hostName)` (`src/components/Lobby.tsx:41`)
   - `joinRoom(hostChainId, playerName)` (`src/components/Lobby.tsx:55`)
   - `startGame(rounds, secondsPerRound)` (`src/components/WaitingRoom.tsx:42`)
@@ -30,22 +28,22 @@ Quick tagline: MicroSkribbl is a blockchain-powered drawing game built on Linera
   - `chooseWord(word)` (`src/components/Game.tsx:278`)
   - `guessWord(guess)` (`src/components/Game.tsx:290`)
   - `leaveRoom` (`src/components/Game.tsx:377`)
-- Запит стану:
+- State query:
   - `room { hostChainId players { chainId name score hasGuessed } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt chatMessages { playerName message isCorrectGuess pointsAwarded } }` (`src/components/Game.tsx:93`)
 
-## Ініціалізація гаманця та клієнта
-- Читання `.env`: `VITE_LINERA_FAUCET_URL`, `VITE_LINERA_APPLICATION_ID` (`src/components/LineraProvider.tsx:39-40,92-93`)
-- Генерація мнемоніки, створення гаманця і ланцюжка через Faucet (`src/components/LineraProvider.tsx:54-55,111-112`)
-- Створення клієнта і отримання application frontend (`src/components/LineraProvider.tsx:57,114`)
-- Авто-перезапуск на WASM-помилки (`src/components/LineraProvider.tsx:143`)
+## Wallet & Client Initialization
+- Reads `.env`: `VITE_LINERA_FAUCET_URL`, `VITE_LINERA_APPLICATION_ID` (`src/components/LineraProvider.tsx:39-40,92-93`)
+- Generates mnemonic, creates wallet and claims chain via Faucet (`src/components/LineraProvider.tsx:54-55,111-112`)
+- Creates client and fetches application frontend (`src/components/LineraProvider.tsx:57,114`)
+- Auto re-init on WASM errors (`src/components/LineraProvider.tsx:143`)
 
-## Порт
-- Фронтенд слухає `3100` (`vite.config.ts:68`)
+## Port
+- Frontend listens on `3100` (`vite.config.ts:68`)
 
-## Безпека
-- Секретне слово існує лише на ланцюжку художника; хост його не ретранслює
-- Планується додаткове шифрування слова
+## Security
+- The secret word exists only on the artist’s chain; the host never re-emits it
+- Future: add an extra encryption layer for the word
 
 ## Troubleshooting
-- «Initializing Wallet…» — перевір `VITE_LINERA_FAUCET_URL` та `VITE_LINERA_APPLICATION_ID`
-- При WASM-помилках провайдер перезапускається автоматично
+- Stuck on “Initializing Wallet…”: check `VITE_LINERA_FAUCET_URL` and `VITE_LINERA_APPLICATION_ID`
+- On WASM runtime errors, the provider auto re-initializes
