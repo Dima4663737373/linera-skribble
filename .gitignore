@@ -1,0 +1,25 @@
+node_modules/
+drawing-server/node_modules/
+build/
+dist/
+.env
+.env.local
+*.log
+*.log.*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Linera build artifacts
+sc/target/
+target/
+
+# Data blob temp files
+bytes.json
+output.jpg
+output.png
+*.output.*
+
+# linera-protocol (if submodule)
+linera-protocol/
