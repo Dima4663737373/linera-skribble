@@ -5,6 +5,7 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { useLinera } from "./LineraProvider";
 import { HistoryView } from "./HistoryView";
+import { FriendsDialog } from "./FriendsDialog";
 import type { HistoryItem } from "./HistoryDetailModal";
 
 interface LobbyProps {
@@ -300,6 +301,19 @@ export function Lobby({ onJoinGame }: LobbyProps) {
           <h1 className="text-black text-4xl">SKRIBBL</h1>
           <p className="text-black/60">Welcome, {playerName}!</p>
         </div>
+
+        {/* Friends & Social */}
+        {ready && chainId && (
+          <div className="flex justify-center">
+            <FriendsDialog
+              currentChainId={chainId}
+              onJoinFromInvite={(hostId) => {
+                if (userId == null) return;
+                onJoinGame(playerName.trim(), hostId, false, userId);
+              }}
+            />
+          </div>
+        )}
 
         {/* Main Card */}
         <div className="bg-white border-2 border-black rounded-lg p-6 space-y-6">

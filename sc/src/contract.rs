@@ -5,7 +5,7 @@
 
 mod state;
 
-use doodle_game::{Operation, DoodleGameAbi, Player, GameState, ChatMessage, ArchivedRoom, CrossChainMessage};
+use doodle_game::{Operation, DoodleGameAbi, Player, GameState, ChatMessage, ArchivedRoom, CrossChainMessage, Invitation};
 use linera_sdk::{
     linera_base_types::{WithContractAbi, StreamName, ChainId},
     views::{RootView, View},
@@ -63,6 +63,11 @@ impl Contract for DoodleGameContract {
     async fn instantiate(&mut self, _argument: ()) {
         self.state.room.set(None);
         self.state.current_word.set(None);
+        self.state.friends.set(Vec::new());
+        self.state.friend_requests_received.set(Vec::new());
+        self.state.friend_requests_sent.set(Vec::new());
+        self.state.room_invitations.set(Vec::new());
+        self.state.sent_invitations.set(Vec::new());
         eprintln!("[INIT] Doodle Game contract initialized on chain {:?}", self.runtime.chain_id());
     }
 
@@ -101,6 +106,19 @@ impl Contract for DoodleGameContract {
             Operation::StartGame { rounds, seconds_per_round } => {
                 if let Some(mut room) = self.state.room.get().clone() {
                     let timestamp = self.runtime.system_time().micros().to_string();
+                    
+                    // Clean up invites
+                    let sent_invites = self.state.sent_invitations.get().clone();
+                    for target in sent_invites {
+                        if let Ok(target_chain) = target.parse::<ChainId>() {
+                             let message = doodle_game::CrossChainMessage::RoomInvitationCancelled {
+                                 host_chain_id: self.runtime.chain_id(),
+                             };
+                             self.runtime.send_message(target_chain, message);
+                        }
+                    }
+                    self.state.sent_invitations.set(Vec::new());
+
                     room.start_game(rounds, seconds_per_round, timestamp.clone());
                     
                     // Automatically choose first drawer for round 1
@@ -405,6 +423,106 @@ impl Contract for DoodleGameContract {
                     }
                 }
             }
+
+            // Friend System
+            Operation::RequestFriend { target_chain_id } => {
+                let target_chain: ChainId = target_chain_id.parse().expect("Invalid chain ID");
+                let mut sent = self.state.friend_requests_sent.get().clone();
+                if !sent.contains(&target_chain_id) {
+                    sent.push(target_chain_id.clone());
+                    self.state.friend_requests_sent.set(sent);
+                    
+                    let message = CrossChainMessage::FriendRequest {
+                        requester_chain_id: self.runtime.chain_id(),
+                    };
+                    self.runtime.send_message(target_chain, message);
+                }
+            }
+            
+            Operation::AcceptFriend { requester_chain_id } => {
+                let mut received = self.state.friend_requests_received.get().clone();
+                if let Some(pos) = received.iter().position(|x| x == &requester_chain_id) {
+                    received.remove(pos);
+                    self.state.friend_requests_received.set(received);
+                    
+                    let mut friends = self.state.friends.get().clone();
+                    if !friends.contains(&requester_chain_id) {
+                        friends.push(requester_chain_id.clone());
+                        self.state.friends.set(friends);
+                        
+                        let target_chain: ChainId = requester_chain_id.parse().expect("Invalid chain ID");
+                        let message = CrossChainMessage::FriendAccepted {
+                            target_chain_id: self.runtime.chain_id(),
+                        };
+                        self.runtime.send_message(target_chain, message);
+                    }
+                }
+            }
+            
+            Operation::DeclineFriend { requester_chain_id } => {
+                let mut received = self.state.friend_requests_received.get().clone();
+                if let Some(pos) = received.iter().position(|x| x == &requester_chain_id) {
+                    received.remove(pos);
+                    self.state.friend_requests_received.set(received);
+                }
+            }
+            
+            Operation::InviteFriend { friend_chain_id } => {
+                let friends = self.state.friends.get();
+                if friends.contains(&friend_chain_id) {
+                     let target_chain: ChainId = friend_chain_id.parse().expect("Invalid chain ID");
+                     
+                     let mut sent_invites = self.state.sent_invitations.get().clone();
+                     if !sent_invites.contains(&friend_chain_id) {
+                         sent_invites.push(friend_chain_id.clone());
+                         self.state.sent_invitations.set(sent_invites);
+                         
+                         let timestamp = self.runtime.system_time().micros().to_string();
+                         let message = CrossChainMessage::RoomInvitation {
+                             host_chain_id: self.runtime.chain_id(),
+                             timestamp,
+                         };
+                         self.runtime.send_message(target_chain, message);
+                     }
+                }
+            }
+            
+            Operation::AcceptInvite { host_chain_id, player_name } => {
+                 let mut invitations = self.state.room_invitations.get().clone();
+                 if let Some(pos) = invitations.iter().position(|inv| inv.host_chain_id == host_chain_id) {
+                     let invite = &invitations[pos];
+                     let invite_time: u64 = invite.timestamp.parse().unwrap_or(0);
+                     let current_time = self.runtime.system_time().micros();
+                     
+                     // 5 minutes = 300,000,000 microseconds
+                     if current_time > invite_time && current_time.saturating_sub(invite_time) <= 300_000_000 {
+                         // Valid invite
+                         invitations.remove(pos);
+                         self.state.room_invitations.set(invitations);
+                         
+                         // Execute Join Room Logic
+                         if let Ok(target_chain) = host_chain_id.parse::<ChainId>() {
+                             let message = CrossChainMessage::JoinRequest {
+                                 player_chain_id: self.runtime.chain_id(),
+                                 player_name,
+                             };
+                             self.runtime.send_message(target_chain, message);
+                         }
+                     } else {
+                         // Expired
+                         invitations.remove(pos);
+                         self.state.room_invitations.set(invitations);
+                     }
+                 }
+            }
+            
+            Operation::DeclineInvite { host_chain_id } => {
+                 let mut invitations = self.state.room_invitations.get().clone();
+                 if let Some(pos) = invitations.iter().position(|inv| inv.host_chain_id == host_chain_id) {
+                     invitations.remove(pos);
+                     self.state.room_invitations.set(invitations);
+                 }
+            }
         }
     }
 
@@ -613,6 +731,57 @@ impl Contract for DoodleGameContract {
                     }
                     self.state.room.set(Some(room));
                     eprintln!("[PLAYER_LEFT] Player removed from room and host unsubscribed from their events");
+                }
+            }
+            
+            doodle_game::CrossChainMessage::FriendRequest { requester_chain_id } => {
+                let mut received = self.state.friend_requests_received.get().clone();
+                let requester_str = requester_chain_id.to_string();
+                if !received.contains(&requester_str) {
+                    received.push(requester_str);
+                    self.state.friend_requests_received.set(received);
+                }
+            }
+            
+            doodle_game::CrossChainMessage::FriendAccepted { target_chain_id } => {
+                 let target_str = target_chain_id.to_string();
+                 
+                 // Add to friends
+                 let mut friends = self.state.friends.get().clone();
+                 if !friends.contains(&target_str) {
+                     friends.push(target_str.clone());
+                     self.state.friends.set(friends);
+                 }
+                 
+                 // Remove from sent requests
+                 let mut sent = self.state.friend_requests_sent.get().clone();
+                 if let Some(pos) = sent.iter().position(|x| x == &target_str) {
+                     sent.remove(pos);
+                     self.state.friend_requests_sent.set(sent);
+                 }
+            }
+            
+            doodle_game::CrossChainMessage::RoomInvitation { host_chain_id, timestamp } => {
+                let mut invitations = self.state.room_invitations.get().clone();
+                let host_str = host_chain_id.to_string();
+                
+                // Avoid duplicates from same host
+                if !invitations.iter().any(|inv| inv.host_chain_id == host_str) {
+                    invitations.push(Invitation {
+                        host_chain_id: host_str,
+                        timestamp,
+                    });
+                    self.state.room_invitations.set(invitations);
+                }
+            }
+            
+            doodle_game::CrossChainMessage::RoomInvitationCancelled { host_chain_id } => {
+                let mut invitations = self.state.room_invitations.get().clone();
+                let host_str = host_chain_id.to_string();
+                
+                if let Some(pos) = invitations.iter().position(|inv| inv.host_chain_id == host_str) {
+                    invitations.remove(pos);
+                    self.state.room_invitations.set(invitations);
                 }
             }
         }

@@ -4,6 +4,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { useLinera } from "./LineraProvider";
+import { FriendsDialog } from "./FriendsDialog";
 
 interface WaitingRoomProps {
   hostChainId: string;
@@ -42,6 +43,13 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
       await application.query('{ "query": "mutation { startGame(rounds: ' + totalRounds + ', secondsPerRound: ' + roundTime + ') }" }');
     } catch {}
     onStartGame({ totalRounds, roundTime });
+  };
+
+  const handleInviteFriend = async (friendChainId: string) => {
+    if (!application) return;
+    const escapeGqlString = (value: string) => value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+    const friend = escapeGqlString(friendChainId);
+    await application.query(JSON.stringify({ query: `mutation { inviteFriend(friendChainId: "${friend}") }` }));
   };
 
   useEffect(() => {
@@ -149,9 +157,19 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
                   {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                 </Button>
               </div>
-              <p className="text-xs text-black/60 mt-2">
+              <p className="text-xs text-black/60 mt-2 mb-3">
                 Share this ID with your friends to join
               </p>
+              
+              {isHost && (
+                <div className="flex justify-center mt-2">
+                  <FriendsDialog 
+                    currentChainId={hostChainId} 
+                    onInviteToGame={handleInviteFriend} 
+                    gameMode={true} 
+                  />
+                </div>
+              )}
             </div>
           </div>
 

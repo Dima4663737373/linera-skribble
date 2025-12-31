@@ -42,12 +42,21 @@ impl Service for DoodleGameService {
         let current_word = self.state.current_word.get().clone();
         let archived_rooms = self.state.archived_rooms.get().clone();
         
+        let friends = self.state.friends.get().clone();
+        let friend_requests_received = self.state.friend_requests_received.get().clone();
+        let friend_requests_sent = self.state.friend_requests_sent.get().clone();
+        let room_invitations = self.state.room_invitations.get().clone();
+        
         let schema = Schema::build(
             QueryRoot {
                 room,
                 current_word,
                 runtime: self.runtime.clone(),
                 archived_rooms,
+                friends,
+                friend_requests_received,
+                friend_requests_sent,
+                room_invitations,
             },
             MutationRoot {
                 runtime: self.runtime.clone(),
@@ -65,6 +74,12 @@ struct QueryRoot {
     current_word: Option<String>,
     runtime: Arc<ServiceRuntime<DoodleGameService>>,
     archived_rooms: Vec<doodle_game::ArchivedRoom>,
+    
+    // New fields
+    friends: Vec<String>,
+    friend_requests_received: Vec<String>,
+    friend_requests_sent: Vec<String>,
+    room_invitations: Vec<doodle_game::Invitation>,
 }
 
 #[Object]
@@ -167,6 +182,26 @@ impl QueryRoot {
     async fn archived_rooms(&self) -> Vec<doodle_game::ArchivedRoom> {
         self.archived_rooms.clone()
     }
+    
+    /// Get friends list
+    async fn friends(&self) -> Vec<String> {
+        self.friends.clone()
+    }
+    
+    /// Get received friend requests
+    async fn friend_requests_received(&self) -> Vec<String> {
+        self.friend_requests_received.clone()
+    }
+    
+    /// Get sent friend requests
+    async fn friend_requests_sent(&self) -> Vec<String> {
+        self.friend_requests_sent.clone()
+    }
+    
+    /// Get received room invitations
+    async fn room_invitations(&self) -> Vec<doodle_game::Invitation> {
+        self.room_invitations.clone()
+    }
 }
 
 #[derive(async_graphql::SimpleObject)]
@@ -246,6 +281,45 @@ impl MutationRoot {
     async fn read_data_blob(&self, hash: String) -> String {
         self.runtime.schedule_operation(&doodle_game::Operation::ReadDataBlob { hash: hash.clone() });
         format!("Data blob read scheduled for hash: {}", hash)
+    }
+
+    /// Request a friend (send request to target chain)
+    async fn request_friend(&self, target_chain_id: String) -> String {
+        self.runtime.schedule_operation(&doodle_game::Operation::RequestFriend { target_chain_id: target_chain_id.clone() });
+        format!("Friend request sent to '{}'", target_chain_id)
+    }
+    
+    /// Accept a friend request
+    async fn accept_friend(&self, requester_chain_id: String) -> String {
+        self.runtime.schedule_operation(&doodle_game::Operation::AcceptFriend { requester_chain_id: requester_chain_id.clone() });
+        format!("Friend request from '{}' accepted", requester_chain_id)
+    }
+    
+    /// Decline a friend request
+    async fn decline_friend(&self, requester_chain_id: String) -> String {
+        self.runtime.schedule_operation(&doodle_game::Operation::DeclineFriend { requester_chain_id: requester_chain_id.clone() });
+        format!("Friend request from '{}' declined", requester_chain_id)
+    }
+    
+    /// Invite a friend to the current room (must be host)
+    async fn invite_friend(&self, friend_chain_id: String) -> String {
+        self.runtime.schedule_operation(&doodle_game::Operation::InviteFriend { friend_chain_id: friend_chain_id.clone() });
+        format!("Invitation sent to '{}'", friend_chain_id)
+    }
+    
+    /// Accept a room invitation (checks validity and joins room)
+    async fn accept_invite(&self, host_chain_id: String, player_name: String) -> String {
+        self.runtime.schedule_operation(&doodle_game::Operation::AcceptInvite { 
+            host_chain_id: host_chain_id.clone(),
+            player_name: player_name.clone()
+        });
+        format!("Invitation from '{}' accepted", host_chain_id)
+    }
+    
+    /// Decline a room invitation
+    async fn decline_invite(&self, host_chain_id: String) -> String {
+        self.runtime.schedule_operation(&doodle_game::Operation::DeclineInvite { host_chain_id: host_chain_id.clone() });
+        format!("Invitation from '{}' declined", host_chain_id)
     }
 }
 

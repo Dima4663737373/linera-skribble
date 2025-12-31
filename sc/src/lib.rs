@@ -111,6 +111,13 @@ pub struct DataBlobInfo {
     pub size: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, async_graphql::SimpleObject)]
+#[graphql(rename_fields = "camelCase")]
+pub struct Invitation {
+    pub host_chain_id: String,
+    pub timestamp: String,
+}
+
 // Operations
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Operation {
@@ -124,6 +131,16 @@ pub enum Operation {
     LeaveRoom { blob_hashes: Option<Vec<String>> },
     // Data Blob operations (read only - blobs created via CLI/GraphQL)
     ReadDataBlob { hash: String },
+    
+    // Friend System
+    RequestFriend { target_chain_id: String },
+    AcceptFriend { requester_chain_id: String },
+    DeclineFriend { requester_chain_id: String },
+    
+    // Invite System
+    InviteFriend { friend_chain_id: String },
+    AcceptInvite { host_chain_id: String, player_name: String },
+    DeclineInvite { host_chain_id: String },
 }
 
 // Events for cross-chain synchronization
@@ -178,6 +195,23 @@ pub enum CrossChainMessage {
         player_chain_id: linera_sdk::linera_base_types::ChainId,
         player_name: Option<String>,
         timestamp: String,
+    },
+    
+    // Friend System Messages
+    FriendRequest {
+        requester_chain_id: linera_sdk::linera_base_types::ChainId,
+    },
+    FriendAccepted {
+        target_chain_id: linera_sdk::linera_base_types::ChainId,
+    },
+    
+    // Invite System Messages
+    RoomInvitation {
+        host_chain_id: linera_sdk::linera_base_types::ChainId,
+        timestamp: String,
+    },
+    RoomInvitationCancelled {
+        host_chain_id: linera_sdk::linera_base_types::ChainId,
     },
 }
 
