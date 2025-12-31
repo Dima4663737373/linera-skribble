@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Users, Copy, Check, Play, Settings } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -27,7 +27,6 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
     { id: "local", name: playerName, isHost },
   ]);
   const { application, client, ready } = useLinera();
-  const debounceRef = useRef<number | null>(null);
 
   const handleCopyChainId = async () => {
     try {
@@ -55,12 +54,17 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
   useEffect(() => {
     if (!client || !application || !ready) return;
 
-    const debouncedPoll = () => {
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current);
-        debounceRef.current = null;
+    let inFlight = false;
+    let pending = false;
+
+    const poll = async () => {
+      if (inFlight) {
+        pending = true;
+        return;
       }
-      debounceRef.current = window.setTimeout(async () => {
+
+      inFlight = true;
+      try {
         try {
           const res = await application.query(
             '{ "query": "query { room { hostChainId gameState totalRounds secondsPerRound players { chainId name } } }" }'
@@ -90,22 +94,28 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
             onStartGame(settings);
           }
         } catch {}
-      }, 400);
+      } finally {
+        inFlight = false;
+        if (pending) {
+          pending = false;
+          poll();
+        }
+      }
     };
 
-    const unsubscribe = (client as any).onNotification?.(() => {
-      debouncedPoll();
-    });
+    const handleNotification = () => {
+      poll();
+    };
+
+    const unsubscribe = (client as any).onNotification?.(handleNotification);
+
+    poll();
 
     return () => {
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current);
-        debounceRef.current = null;
-      }
       if (typeof unsubscribe === 'function') {
         try { unsubscribe(); } catch {}
       } else {
-        try { (client as any).offNotification?.(debouncedPoll); } catch {}
+        try { (client as any).offNotification?.(handleNotification); } catch {}
       }
     };
   }, [client, application, ready, hostChainId, playerName, isHost, totalRounds, roundTime]);

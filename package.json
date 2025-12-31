@@ -1,10 +1,9 @@
 {
-      "name": "Сучасна версія гри Skribbl",
+      "name": "MicroSkribbl",
       "version": "0.1.0",
       "private": true,
       "dependencies": {
             "@linera/client": "^0.15.8",
-            "@linera/signer": "^0.15.6",
             "@radix-ui/react-accordion": "^1.2.3",
             "@radix-ui/react-alert-dialog": "^1.1.6",
             "@radix-ui/react-aspect-ratio": "^1.1.2",

@@ -46,7 +46,7 @@ export function Lobby({ onJoinGame }: LobbyProps) {
   useEffect(() => {
     if (isLoggedIn && application && ready && playerName && preloadedHistory.length === 0 && !historyPreloading) {
       console.log("[History] Auto-loading history for logged in user:", playerName);
-      setTimeout(() => preloadHistory(playerName), 100);
+      preloadHistory(playerName);
     }
   }, [isLoggedIn, application, ready, playerName]);
 
@@ -167,8 +167,6 @@ export function Lobby({ onJoinGame }: LobbyProps) {
               // Persist credentials
               localStorage.setItem('skribbl_nickname', nick.trim());
               localStorage.setItem('skribbl_password', pass.trim());
-              // Pre-load history in background
-              setTimeout(() => preloadHistory(nick.trim()), 100); // Small delay to ensure application is ready
               resolve();
               ws.close();
             } else if (msg.type === 'auth_error') {

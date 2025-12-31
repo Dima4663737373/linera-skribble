@@ -61,9 +61,7 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
   const autoDrawerScheduleKeyRef = useRef<string | null>(null);
   const autoDrawerFireKeyRef = useRef<string | null>(null);
   const chooseDrawerInFlightRef = useRef(false);
-  const lastChooseDrawerCallRef = useRef(0);
   const blobHashesRef = useRef<string[]>([]); // Store accumulated blob hashes locally
-  const lastQueryAtRef = useRef<number>(0);
   const historyWsRef = useRef<WebSocket | null>(null); // Dedicated WS for history sync
 
   const isHost = roomRef.current?.hostChainId === chainId;
@@ -191,69 +189,56 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
             timestamp: Date.now(),
           }));
         setMessages(msgs);
-        // Track last query time (TTL for debounced notifications)
-        lastQueryAtRef.current = Date.now();
       }
     } catch { }
   };
 
 
 
-  // Subscribe to notifications with debounce and TTL; remove polling
+  // Subscribe to notifications; remove polling
   useEffect(() => {
     if (!client || !application || !ready) return;
 
-    let queryTimeout: number | null = null;
     let isQuerying = false;
-    let prevBlobHashes: string[] = [];
+    let pending = false;
 
-    const debouncedQuery = () => {
-      if (queryTimeout) {
-        window.clearTimeout(queryTimeout);
+    const runQuery = async () => {
+      if (isQuerying) {
+        pending = true;
+        return;
       }
-      queryTimeout = window.setTimeout(() => {
-        const now = Date.now();
-        const elapsed = now - lastQueryAtRef.current;
-        if (elapsed < 400) {
-          // Skip if we queried very recently
-          return;
-        }
-        if (!isQuerying) {
-          isQuerying = true;
-          queryGameState().then(async () => {
-            // Check if we need to save history for a new blob
-            // Need to query state separately or check if room object has changed
-            // Unfortunately queryGameState updates refs but we are inside the closure
-            // We'll rely on roomRef.current being updated
-            const room = roomRef.current;
-            if (room && room.blobHashes && room.blobHashes.length > blobHashesRef.current.length) {
-              const newHashes = room.blobHashes.slice(blobHashesRef.current.length);
-              blobHashesRef.current = room.blobHashes; // Sync local ref
 
-              if (userId && newHashes.length > 0) {
-                console.log("[History] New drawing detected for user:", userId, newHashes);
-                // Server auto-saves for all room members, no manual save needed
-              }
-            }
-          }).finally(() => {
-            isQuerying = false;
-          });
+      isQuerying = true;
+      try {
+        await queryGameState();
+
+        const room = roomRef.current;
+        if (room && room.blobHashes && room.blobHashes.length > blobHashesRef.current.length) {
+          const newHashes = room.blobHashes.slice(blobHashesRef.current.length);
+          blobHashesRef.current = room.blobHashes;
+
+          if (userId && newHashes.length > 0) {
+            console.log("[History] New drawing detected for user:", userId, newHashes);
+          }
         }
-      }, 500);
+      } finally {
+        isQuerying = false;
+        if (pending) {
+          pending = false;
+          runQuery();
+        }
+      }
     };
 
     const handleNotification = (_notification: any) => {
-      debouncedQuery();
+      runQuery();
     };
 
     const maybeUnsubscribe = (client as any).onNotification?.(handleNotification);
 
-    // No initial query; rely solely on subscription-triggered queries
+    runQuery();
 
     return () => {
-      if (queryTimeout) {
-        window.clearTimeout(queryTimeout);
-      }
       if (typeof maybeUnsubscribe === 'function') {
         try { maybeUnsubscribe(); } catch { }
       } else {
@@ -370,9 +355,6 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
       return;
     }
     if (chooseDrawerInFlightRef.current) return;
-    const now = Date.now();
-    if (now - lastChooseDrawerCallRef.current < 2000) return;
-    lastChooseDrawerCallRef.current = now;
     chooseDrawerInFlightRef.current = true;
 
     // Screenshot and Publish Blob (Async)

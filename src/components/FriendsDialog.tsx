@@ -23,7 +23,7 @@ export function FriendsDialog({ currentChainId, onInviteToGame, onJoinFromInvite
   const [isLoading, setIsLoading] = useState(false);
   const [invitingFriendId, setInvitingFriendId] = useState<string | null>(null);
   const [acceptingInviteHostId, setAcceptingInviteHostId] = useState<string | null>(null);
-  const { application } = useLinera();
+  const { application, client, ready } = useLinera();
 
   const escapeGqlString = (value: string) => value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r/g, "\\r").replace(/\n/g, "\\n");
 
@@ -50,12 +50,44 @@ export function FriendsDialog({ currentChainId, onInviteToGame, onJoinFromInvite
   };
 
   useEffect(() => {
-    if (isOpen) {
-      fetchData();
-      const interval = setInterval(fetchData, 2000);
-      return () => clearInterval(interval);
-    }
-  }, [isOpen, application]);
+    if (!isOpen || !application || !ready) return;
+
+    let inFlight = false;
+    let pending = false;
+
+    const requestFetch = () => {
+      if (inFlight) {
+        pending = true;
+        return;
+      }
+
+      inFlight = true;
+      fetchData()
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+          if (pending) {
+            pending = false;
+            requestFetch();
+          }
+        });
+    };
+
+    const handleNotification = () => {
+      requestFetch();
+    };
+
+    const unsub = (client as any)?.onNotification?.(handleNotification);
+    requestFetch();
+
+    return () => {
+      if (typeof unsub === "function") {
+        try { unsub(); } catch {}
+      } else {
+        try { (client as any)?.offNotification?.(handleNotification); } catch {}
+      }
+    };
+  }, [isOpen, application, ready, client]);
 
   const handleAddFriend = async () => {
     if (!newFriendId.trim() || !application) return;

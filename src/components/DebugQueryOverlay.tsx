@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
@@ -16,7 +16,6 @@ export function DebugQueryOverlay({ application, client, ready, defaultQuery, ti
   const [resp, setResp] = useState("");
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
-  const debounceRef = useRef<number | null>(null);
 
   const runQuery = async () => {
     if (!application || !ready) return;
@@ -33,26 +32,38 @@ export function DebugQueryOverlay({ application, client, ready, defaultQuery, ti
 
   useEffect(() => {
     if (!client || !application || !ready || !auto) return;
-    const debounced = () => {
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current);
-        debounceRef.current = null;
+    let inFlight = false;
+    let pending = false;
+
+    const requestQuery = () => {
+      if (inFlight) {
+        pending = true;
+        return;
       }
-      debounceRef.current = window.setTimeout(() => {
-        runQuery();
-      }, 300);
+
+      inFlight = true;
+      runQuery()
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+          if (pending) {
+            pending = false;
+            requestQuery();
+          }
+        });
     };
-    const unsub = client?.onNotification?.(debounced);
-    debounced();
+
+    const handleNotification = () => {
+      requestQuery();
+    };
+
+    const unsub = client?.onNotification?.(handleNotification);
+    requestQuery();
     return () => {
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current);
-        debounceRef.current = null;
-      }
       if (typeof unsub === "function") {
         try { unsub(); } catch {}
       } else {
-        try { client?.offNotification?.(debounced); } catch {}
+        try { client?.offNotification?.(handleNotification); } catch {}
       }
     };
   }, [client, application, ready, auto, query]);
@@ -98,4 +109,3 @@ export function DebugQueryOverlay({ application, client, ready, defaultQuery, ti
     </div>
   );
 }
-

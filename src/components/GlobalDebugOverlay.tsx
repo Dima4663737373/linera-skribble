@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "./ui/button";
-import { Input } from "./ui/input";
 
 interface GlobalDebugOverlayProps {
   application?: any;
@@ -19,7 +18,6 @@ export function GlobalDebugOverlay({ application, client, ready }: GlobalDebugOv
   const [queryText, setQueryText] = useState(ROOM_QUERY);
   const [resp, setResp] = useState("");
   const [loading, setLoading] = useState(false);
-  const debounceRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (tab === 'room') setQueryText(ROOM_QUERY);
@@ -47,26 +45,38 @@ export function GlobalDebugOverlay({ application, client, ready }: GlobalDebugOv
 
   useEffect(() => {
     if (!client || !application || !ready || !auto) return;
-    const debounced = () => {
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current);
-        debounceRef.current = null;
+    let inFlight = false;
+    let pending = false;
+
+    const requestQuery = () => {
+      if (inFlight) {
+        pending = true;
+        return;
       }
-      debounceRef.current = window.setTimeout(() => {
-        runQuery();
-      }, 250);
+
+      inFlight = true;
+      runQuery()
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+          if (pending) {
+            pending = false;
+            requestQuery();
+          }
+        });
     };
-    const unsub = client?.onNotification?.(debounced);
-    debounced();
+
+    const handleNotification = () => {
+      requestQuery();
+    };
+
+    const unsub = client?.onNotification?.(handleNotification);
+    requestQuery();
     return () => {
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current);
-        debounceRef.current = null;
-      }
       if (typeof unsub === "function") {
         try { unsub(); } catch {}
       } else {
-        try { client?.offNotification?.(debounced); } catch {}
+        try { client?.offNotification?.(handleNotification); } catch {}
       }
     };
   }, [client, application, ready, auto, queryText, rawGraphql]);
@@ -118,4 +128,3 @@ export function GlobalDebugOverlay({ application, client, ready }: GlobalDebugOv
     </div>
   );
 }
-
