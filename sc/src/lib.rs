@@ -25,6 +25,8 @@ impl ServiceAbi for DoodleGameAbi {
 pub struct Player {
     pub chain_id: String,
     pub name: String,
+    #[serde(default)]
+    pub avatar_json: String,
     pub score: u32,
     pub has_guessed: bool,
 }
@@ -121,8 +123,8 @@ pub struct Invitation {
 // Operations
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Operation {
-    CreateRoom { host_name: String },
-    JoinRoom { host_chain_id: String, player_name: String },
+    CreateRoom { host_name: String, avatar_json: String },
+    JoinRoom { host_chain_id: String, player_name: String, avatar_json: String },
     StartGame { rounds: u32, seconds_per_round: u32 },
     ChooseDrawer, // logic moved to async, no hash needed here
     ChooseWord { word: String },
@@ -139,7 +141,7 @@ pub enum Operation {
     
     // Invite System
     InviteFriend { friend_chain_id: String },
-    AcceptInvite { host_chain_id: String, player_name: String },
+    AcceptInvite { host_chain_id: String, player_name: String, avatar_json: String },
     DeclineInvite { host_chain_id: String },
 }
 
@@ -176,6 +178,7 @@ pub enum CrossChainMessage {
     JoinRequest { 
         player_chain_id: linera_sdk::linera_base_types::ChainId,
         player_name: String,
+        avatar_json: String,
     },
     GuessSubmission {
         guesser_chain_id: linera_sdk::linera_base_types::ChainId,
@@ -216,10 +219,11 @@ pub enum CrossChainMessage {
 }
 
 impl GameRoom {
-    pub fn new(host_chain_id: String, host_name: String, _timestamp: String) -> Self {
+    pub fn new(host_chain_id: String, host_name: String, avatar_json: String, _timestamp: String) -> Self {
         let host_player = Player {
             chain_id: host_chain_id.clone(),
             name: host_name.clone(),
+            avatar_json,
             score: 0,
             has_guessed: false,
         };

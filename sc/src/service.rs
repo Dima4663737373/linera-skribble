@@ -219,16 +219,17 @@ struct MutationRoot {
 #[Object]
 impl MutationRoot {
     /// Create a new game room (host only)
-    async fn create_room(&self, host_name: String) -> String {
-        self.runtime.schedule_operation(&doodle_game::Operation::CreateRoom { host_name: host_name.clone() });
+    async fn create_room(&self, host_name: String, avatar_json: Option<String>) -> String {
+        self.runtime.schedule_operation(&doodle_game::Operation::CreateRoom { host_name: host_name.clone(), avatar_json: avatar_json.unwrap_or_default() });
         format!("Room created by host '{}'", host_name)
     }
     
     /// Join an existing room
-    async fn join_room(&self, host_chain_id: String, player_name: String) -> String {
+    async fn join_room(&self, host_chain_id: String, player_name: String, avatar_json: Option<String>) -> String {
         self.runtime.schedule_operation(&doodle_game::Operation::JoinRoom { 
             host_chain_id: host_chain_id.clone(), 
-            player_name: player_name.clone() 
+            player_name: player_name.clone(),
+            avatar_json: avatar_json.unwrap_or_default(),
         });
         format!("Join request sent to host chain '{}' by player '{}'", host_chain_id, player_name)
     }
@@ -308,10 +309,11 @@ impl MutationRoot {
     }
     
     /// Accept a room invitation (checks validity and joins room)
-    async fn accept_invite(&self, host_chain_id: String, player_name: String) -> String {
+    async fn accept_invite(&self, host_chain_id: String, player_name: String, avatar_json: Option<String>) -> String {
         self.runtime.schedule_operation(&doodle_game::Operation::AcceptInvite { 
             host_chain_id: host_chain_id.clone(),
-            player_name: player_name.clone()
+            player_name: player_name.clone(),
+            avatar_json: avatar_json.unwrap_or_default(),
         });
         format!("Invitation from '{}' accepted", host_chain_id)
     }

@@ -8,21 +8,20 @@ import { useLinera } from "./components/LineraProvider";
 
 type AppState =
   | { screen: "lobby" }
-  | { screen: "waiting"; playerName: string; hostChainId: string; isHost: boolean; userId?: number }
-  | { screen: "game"; playerName: string; hostChainId: string; settings: GameSettings; userId?: number }
-  | { screen: "results"; players: Player[]; settings: GameSettings; playerName: string; hostChainId: string; userId?: number };
+  | { screen: "waiting"; playerName: string; hostChainId: string; isHost: boolean }
+  | { screen: "game"; playerName: string; hostChainId: string; settings: GameSettings }
+  | { screen: "results"; players: Player[]; blobHashes: string[]; settings: GameSettings; playerName: string; hostChainId: string };
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>({ screen: "lobby" });
   const { application, client, ready, chainId } = useLinera();
 
-  const handleJoinGame = (playerName: string, hostChainId: string, isHost: boolean, userId?: number) => {
+  const handleJoinGame = (playerName: string, hostChainId: string, isHost: boolean) => {
     setAppState({
       screen: "waiting",
       playerName,
       hostChainId,
       isHost,
-      userId,
     });
   };
 
@@ -33,19 +32,18 @@ export default function App() {
       playerName: appState.playerName,
       hostChainId: appState.hostChainId,
       settings,
-      userId: appState.userId,
     });
   };
 
-  const handleGameEnd = (players: Player[]) => {
+  const handleGameEnd = (players: Player[], blobHashes: string[]) => {
     if (appState.screen !== "game") return;
     setAppState({
       screen: "results",
       players,
+      blobHashes,
       settings: appState.settings,
       playerName: appState.playerName,
       hostChainId: appState.hostChainId,
-      userId: appState.userId
     });
   };
 
@@ -56,13 +54,11 @@ export default function App() {
       playerName: appState.playerName,
       hostChainId: appState.hostChainId,
       isHost: appState.hostChainId === chainId,
-      userId: appState.userId,
     });
   };
 
   const handleBackToLobby = () => {
-    try { localStorage.removeItem('linera_mnemonic'); } catch { }
-    window.location.reload();
+    setAppState({ screen: "lobby" });
   };
 
   if (appState.screen === "lobby") {
@@ -94,6 +90,8 @@ export default function App() {
       <>
         <GameResults
           players={appState.players}
+          blobHashes={appState.blobHashes}
+          hostChainId={appState.hostChainId}
           onPlayAgain={handlePlayAgain}
           onBackToLobby={handleBackToLobby}
         />
@@ -107,7 +105,6 @@ export default function App() {
       <Game
         playerName={appState.playerName}
         hostChainId={appState.hostChainId}
-        userId={appState.userId}
         settings={appState.settings}
         onGameEnd={handleGameEnd}
         onBackToLobby={handleBackToLobby}

@@ -8,14 +8,13 @@ interface CanvasProps {
   canvasData: string;
   roomId?: string;
   clientId?: string;
-  userId?: number;
 }
 
 export type CanvasHandle = {
   clearCanvas: () => void;
   getDataURL: () => string;
   publishBlob: (metadata?: any) => Promise<string>;
-  saveHistory: (blobHashes: string[], roomId: string, userId: number) => void;
+  sendChosenWord: (word: string, round?: number, turnId?: string) => void;
 };
 
 interface Point {
@@ -26,7 +25,7 @@ interface Point {
 type Tool = "brush" | "eraser" | "circle" | "rectangle" | "picker" | "fill";
 
 export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
-  { isDrawing, onCanvasChange, canvasData, roomId, clientId, userId }: CanvasProps & { userId?: number },
+  { isDrawing, onCanvasChange, canvasData, roomId, clientId }: CanvasProps,
   ref
 ) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -117,7 +116,6 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             type: 'join',
             roomId,
             clientId: clientId || 'anon',
-            userId: userId || null  // Send userId for history tracking
           }));
         } catch { }
       };
@@ -275,16 +273,22 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         }, 10000);
       });
     },
-    saveHistory: (blobHashes: string[], roomId: string, userId: number) => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: 'save_history',
-          userId: userId,
-          roomId: roomId,
-          blobHashes: blobHashes
+    sendChosenWord: (word: string, round?: number, turnId?: string) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const w = String(word || "").trim();
+      if (!w) return;
+      try {
+        ws.send(JSON.stringify({
+          type: 'set_word',
+          roomId,
+          drawerId: clientId || 'anon',
+          word: w,
+          round: Number.isFinite(Number(round)) ? Number(round) : undefined,
+          turnId: turnId ? String(turnId) : undefined,
         }));
-      }
-    }
+      } catch { }
+    },
   }));
 
   const getMousePos = (e: React.MouseEvent<HTMLCanvasElement>): Point => {

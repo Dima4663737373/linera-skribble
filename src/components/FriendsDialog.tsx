@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { useLinera } from "./LineraProvider";
+import { getSelectedAvatarJson } from "../utils/characters";
 
 interface FriendsDialogProps {
   currentChainId: string;
@@ -138,7 +139,8 @@ export function FriendsDialog({ currentChainId, onInviteToGame, onJoinFromInvite
       const playerName = localStorage.getItem("skribbl_nickname") || "Player";
       const host = escapeGqlString(hostId);
       const name = escapeGqlString(playerName);
-      await application.query(JSON.stringify({ query: `mutation { acceptInvite(hostChainId: "${host}", playerName: "${name}") }` }));
+      const avatarJson = escapeGqlString(getSelectedAvatarJson());
+      await application.query(JSON.stringify({ query: `mutation { acceptInvite(hostChainId: "${host}", playerName: "${name}", avatarJson: "${avatarJson}") }` }));
       setIsOpen(false);
       onJoinFromInvite?.(hostId);
     } catch (e) {

@@ -1,6 +1,8 @@
 import { X, Clock, Trophy, MessageCircle, Users } from "lucide-react";
 import { createPortal } from "react-dom";
 import { Button } from "./ui/button";
+import { CharacterAvatar } from "./CharacterAvatar";
+import { getCharacterIdForPlayer, getCharacterPropsById, parseAvatarJson } from "../utils/characters";
 
 export interface HistoryItem {
     blobHash: string;
@@ -10,7 +12,7 @@ export interface HistoryItem {
     meta?: {
         round: number;
         word: string;
-        players: { id: string; name: string; score: number }[];
+        players: { id: string; name: string; score: number; avatarJson?: string }[];
         chat: { sender: string; text: string }[];
     };
 }
@@ -21,7 +23,7 @@ interface HistoryDetailModalProps {
 }
 
 export function HistoryDetailModal({ item, onClose }: HistoryDetailModalProps) {
-    if (!item) return null;
+    if (!item) return null
 
     const formatDate = (dateStr: string) => {
         const date = new Date(dateStr);
@@ -33,6 +35,9 @@ export function HistoryDetailModal({ item, onClose }: HistoryDetailModalProps) {
             minute: '2-digit'
         });
     };
+
+    const players = (item.meta?.players ?? []).slice().sort((a, b) => b.score - a.score);
+    const chat = item.meta?.chat ?? [];
 
     return createPortal(
         <div
@@ -170,6 +175,28 @@ export function HistoryDetailModal({ item, onClose }: HistoryDetailModalProps) {
                             <Clock style={{ width: '14px', height: '14px' }} />
                             {formatDate(item.timestamp)}
                         </div>
+                        <div style={{
+                            padding: '12px 16px',
+                            borderBottom: '2px solid #e5e7eb',
+                            color: '#6b7280',
+                            fontSize: '12px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '6px',
+                        }}>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                <span style={{ fontWeight: 700, color: 'black' }}>Room</span>
+                                <span style={{ fontFamily: 'monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.roomId}>
+                                    {item.roomId}
+                                </span>
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                <span style={{ fontWeight: 700, color: 'black' }}>Blob</span>
+                                <span style={{ fontFamily: 'monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.blobHash}>
+                                    {item.blobHash}
+                                </span>
+                            </div>
+                        </div>
 
                         {/* Scrollable Content */}
                         <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
@@ -193,7 +220,7 @@ export function HistoryDetailModal({ item, onClose }: HistoryDetailModalProps) {
                                             </span>
                                         </div>
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                            {item.meta.players?.sort((a, b) => b.score - a.score).map((p, idx) => (
+                                            {players.map((p, idx) => (
                                                 <div
                                                     key={p.id}
                                                     style={{
@@ -207,6 +234,12 @@ export function HistoryDetailModal({ item, onClose }: HistoryDetailModalProps) {
                                                     }}
                                                 >
                                                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                                        <div style={{ width: 34, height: 34, overflow: 'hidden', borderRadius: 8, border: '2px solid #000', background: 'white', flexShrink: 0 }}>
+                                                            <CharacterAvatar
+                                                                props={parseAvatarJson(p.avatarJson || "") || getCharacterPropsById(getCharacterIdForPlayer(p.id, ""))}
+                                                                className="w-full h-full flex items-center justify-center"
+                                                            />
+                                                        </div>
                                                         <span
                                                             style={{
                                                                 width: '22px',
@@ -285,7 +318,7 @@ export function HistoryDetailModal({ item, onClose }: HistoryDetailModalProps) {
                                         >
                                             {item.meta.chat?.length ? (
                                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                                    {item.meta.chat.map((m, idx) => (
+                                                    {chat.map((m, idx) => (
                                                         <div key={idx} style={{ fontSize: '12px', lineHeight: '1.4' }}>
                                                             <span style={{ fontWeight: '600', color: '#ef4444' }}>
                                                                 {m.sender}:

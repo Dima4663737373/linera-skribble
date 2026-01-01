@@ -13,6 +13,7 @@ export interface Player {
   score: number;
   isDrawing: boolean;
   hasGuessed: boolean;
+  avatarJson?: string;
 }
 
 export interface ChatMessage {
@@ -35,13 +36,12 @@ const FIXED_WORD_OPTIONS = ["cat", "house", "tree"];
 interface GameProps {
   playerName: string;
   hostChainId: string;
-  userId?: number;
   settings: GameSettings;
-  onGameEnd: (players: Player[]) => void;
+  onGameEnd: (players: Player[], blobHashes: string[]) => void;
   onBackToLobby: () => void;
 }
 
-export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onBackToLobby }: GameProps) {
+export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLobby }: GameProps) {
   const { client, application, chainId, ready } = useLinera();
 
   const [players, setPlayers] = useState<Player[]>([]);
@@ -62,7 +62,9 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
   const autoDrawerFireKeyRef = useRef<string | null>(null);
   const chooseDrawerInFlightRef = useRef(false);
   const blobHashesRef = useRef<string[]>([]); // Store accumulated blob hashes locally
-  const historyWsRef = useRef<WebSocket | null>(null); // Dedicated WS for history sync
+  const lastBlobPublishRef = useRef<Promise<string> | null>(null);
+  const sentGameEndRef = useRef(false);
+  const sentWordForTurnRef = useRef<string | null>(null);
 
   const isHost = roomRef.current?.hostChainId === chainId;
 
@@ -87,61 +89,11 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
     setCanvasData("");
   };
 
-  // Dedicated function to save history via WebSocket (independent of Canvas)
-  const saveHistoryToServer = async (hashes: string[], roomId: string, uid: number) => {
-    console.log(`[History] Starting save: hashes=${JSON.stringify(hashes)}, roomId=${roomId}, userId=${uid}`);
-
-    const wsUrl = (import.meta as any).env?.VITE_DRAWING_SERVER_WS_URL || 'wss://skribbl-linera.xyz/ws';
-    const finalUrl = wsUrl.includes('wss://skribbl-linera.xyz') && window.location.hostname === 'localhost'
-      ? 'ws://localhost:8070'
-      : wsUrl.replace('wss://', 'ws://');
-
-    console.log(`[History] Connecting to: ${finalUrl}`);
-
-    return new Promise<void>((resolve) => {
-      try {
-        const ws = new WebSocket(finalUrl);
-
-        ws.onopen = () => {
-          console.log(`[History] WebSocket connected, sending save_history...`);
-          const payload = {
-            type: 'save_history',
-            userId: uid,
-            roomId: roomId,
-            blobHashes: hashes
-          };
-          console.log(`[History] Sending payload:`, payload);
-          ws.send(JSON.stringify(payload));
-          console.log(`[History] Message sent, waiting before close...`);
-          setTimeout(() => {
-            console.log(`[History] Closing WebSocket`);
-            ws.close();
-            resolve();
-          }, 1000); // Increased to 1 second
-        };
-
-        ws.onerror = (err) => {
-          console.error('[History] WebSocket error:', err);
-          ws.close();
-          resolve();
-        };
-
-        ws.onclose = () => {
-          console.log('[History] WebSocket closed');
-          resolve();
-        };
-      } catch (e) {
-        console.error('[History] Failed to create WebSocket:', e);
-        resolve();
-      }
-    });
-  };
-
   const queryGameState = async () => {
     if (!application || !ready) return;
     try {
       const roomResponse = await application.query(
-        '{ "query": "query { room { hostChainId players { chainId name score hasGuessed } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt blobHashes chatMessages { playerName message isCorrectGuess pointsAwarded } } }" }'
+        '{ "query": "query { room { hostChainId players { chainId name avatarJson score hasGuessed } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt blobHashes chatMessages { playerName message isCorrectGuess pointsAwarded } } }" }'
       );
       const roomData = JSON.parse(roomResponse);
       const room = roomData.data?.room;
@@ -158,6 +110,7 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
         const mappedPlayers: Player[] = room.players.map((p: any, idx: number) => ({
           id: p.chainId,
           name: p.name,
+          avatarJson: p.avatarJson,
           score: p.score ?? 0,
           isDrawing: (room.currentDrawerIndex ?? -1) === idx,
           hasGuessed: !!p.hasGuessed,
@@ -214,12 +167,7 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
 
         const room = roomRef.current;
         if (room && room.blobHashes && room.blobHashes.length > blobHashesRef.current.length) {
-          const newHashes = room.blobHashes.slice(blobHashesRef.current.length);
           blobHashesRef.current = room.blobHashes;
-
-          if (userId && newHashes.length > 0) {
-            console.log("[History] New drawing detected for user:", userId, newHashes);
-          }
         }
       } finally {
         isQuerying = false;
@@ -338,6 +286,24 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
     } catch { }
   };
 
+  useEffect(() => {
+    const room = roomRef.current;
+    if (!room) return;
+    const currentDrawerIndex = room.currentDrawerIndex ?? -1;
+    const drawerId = players[currentDrawerIndex]?.id;
+    const amIDrawer = drawerId && drawerId === chainId;
+    const turnId = room.wordChosenAt ? String(room.wordChosenAt) : "";
+    if (!amIDrawer) return;
+    const w = String(currentWord || "").trim();
+    if (!w) return;
+    if (!turnId) return;
+    if (sentWordForTurnRef.current === turnId) return;
+    sentWordForTurnRef.current = turnId;
+    try {
+      canvasCompRef.current?.sendChosenWord(w, round, turnId);
+    } catch { }
+  }, [players, currentWord]);
+
   const handleSendMessage = async (message: string) => {
     if (!application || !ready) return;
     const room = roomRef.current;
@@ -372,17 +338,22 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
         players: players.map(p => ({
           id: p.id,
           name: p.name,
-          score: p.score
+          score: p.score,
+          avatarJson: p.avatarJson || "",
         })),
         chat: chatData,
         round: round,
-        word: currentWord // Might be empty if not drawer, but useful context
+        word: "",
+        drawerId: players[(room?.currentDrawerIndex ?? -1)]?.id ?? "",
+        turnId: room?.wordChosenAt ? String(room.wordChosenAt) : "",
       };
 
       console.log("Publishing blob with metadata:", metadata);
 
       // Fire and forget - don't block the game flow
-      canvasCompRef.current.publishBlob(metadata).then(hash => {
+      const p = canvasCompRef.current.publishBlob(metadata);
+      lastBlobPublishRef.current = p;
+      p.then(hash => {
         console.log("Async blob published:", hash);
         if (hash) {
           blobHashesRef.current.push(hash);
@@ -403,8 +374,16 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
   // End game if backend says so
   useEffect(() => {
     const room = roomRef.current;
-    if (room && (room.gameState === 'GameEnded' || room.gameState === 'GAME_ENDED')) {
-      onGameEnd(players);
+    if (!room || sentGameEndRef.current) return;
+    if (room.gameState === 'GameEnded' || room.gameState === 'GAME_ENDED') {
+      sentGameEndRef.current = true;
+      const waitForLast = lastBlobPublishRef.current
+        ? Promise.race([lastBlobPublishRef.current, new Promise<string>((resolve) => setTimeout(() => resolve(""), 1500))])
+        : Promise.resolve("");
+      waitForLast.finally(() => {
+        const unique = Array.from(new Set(blobHashesRef.current.filter(Boolean)));
+        onGameEnd(players, unique);
+      });
     }
   }, [players]);
 
@@ -470,7 +449,15 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
           if (isHost) {
             // HOST: Send accumulated hashes and sync history
             try {
-              const capturedHashes = blobHashesRef.current || [];
+              if (lastBlobPublishRef.current) {
+                try {
+                  await Promise.race([
+                    lastBlobPublishRef.current,
+                    new Promise<string>((resolve) => setTimeout(() => resolve(""), 1500)),
+                  ]);
+                } catch {}
+              }
+              const capturedHashes = Array.from(new Set((blobHashesRef.current || []).filter(Boolean)));
               console.log("Host leaving with hashes:", capturedHashes);
 
               const mutation = capturedHashes.length > 0
@@ -495,7 +482,7 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
       />
 
       <div className="flex-1 flex gap-4 p-4 max-w-[1600px] mx-auto w-full">
-        <PlayersList players={players} />
+        <PlayersList players={players} localPlayerId={chainId || ""} />
 
         <div className="flex-1 flex flex-col gap-4">
           {showWordSelector && isDrawing && (
@@ -512,7 +499,6 @@ export function Game({ playerName, hostChainId, userId, settings, onGameEnd, onB
               canvasData={canvasData}
               roomId={hostChainId}
               clientId={chainId || 'local'}
-              userId={userId}
             />
           </div>
         </div>

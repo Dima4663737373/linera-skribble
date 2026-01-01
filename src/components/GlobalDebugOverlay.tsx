@@ -7,8 +7,8 @@ interface GlobalDebugOverlayProps {
   ready: boolean;
 }
 
-const ROOM_QUERY = 'query { room { hostChainId gameState totalRounds secondsPerRound players { chainId name } } }';
-const GAME_QUERY = 'query { room { hostChainId players { chainId name score hasGuessed } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt chatMessages { playerName message isCorrectGuess pointsAwarded } } }';
+const ROOM_QUERY = 'query { room { hostChainId gameState totalRounds secondsPerRound players { chainId name avatarJson } } }';
+const GAME_QUERY = 'query { room { hostChainId players { chainId name avatarJson score hasGuessed } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt chatMessages { playerName message isCorrectGuess pointsAwarded } } }';
 
 export function GlobalDebugOverlay({ application, client, ready }: GlobalDebugOverlayProps) {
   const [open, setOpen] = useState(false);

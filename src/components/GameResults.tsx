@@ -1,23 +1,29 @@
 import { Crown, Medal, Home, Trophy, RotateCcw } from "lucide-react";
 import { Button } from "./ui/button";
 import { useLinera } from "./LineraProvider";
+import { CharacterAvatar } from "./CharacterAvatar";
+import { getCharacterIdForPlayer, getCharacterPropsById, parseAvatarJson } from "../utils/characters";
 
 interface PlayerResult {
   id: string;
   name: string;
   score: number;
+  avatarJson?: string;
 }
 
 interface GameResultsProps {
   players: PlayerResult[];
+  blobHashes: string[];
+  hostChainId: string;
   onBackToLobby: () => void;
   onPlayAgain: () => void;
 }
 
-export function GameResults({ players, onBackToLobby, onPlayAgain }: GameResultsProps) {
-  const { application, ready } = useLinera();
+export function GameResults({ players, blobHashes, hostChainId, onBackToLobby, onPlayAgain }: GameResultsProps) {
+  const { application, ready, chainId } = useLinera();
   const sortedPlayers = [...players].sort((a, b) => b.score - a.score);
   const winner = sortedPlayers[0];
+  const isHost = String(chainId || "").trim() === String(hostChainId || "").trim();
 
   const getMedalIcon = (position: number) => {
     if (position === 0) return <Trophy className="w-8 h-8 text-red-500" />;
@@ -60,8 +66,13 @@ export function GameResults({ players, onBackToLobby, onPlayAgain }: GameResults
                   )}
                 </div>
 
-                <div className="flex-1">
-                  <div className="text-xl">{player.name}</div>
+                <CharacterAvatar
+                  props={parseAvatarJson(player.avatarJson || "") || getCharacterPropsById(getCharacterIdForPlayer(player.id, ""))}
+                  className="w-10 h-10 flex items-center justify-center"
+                />
+
+                <div className="flex-1 min-w-0">
+                  <div className="text-xl truncate">{player.name}</div>
                 </div>
 
                 <div className="text-2xl tabular-nums">
@@ -86,7 +97,12 @@ export function GameResults({ players, onBackToLobby, onPlayAgain }: GameResults
             onClick={async () => {
               if (application && ready) {
                 try {
-                  await application.query('{ "query": "mutation { leaveRoom }" }');
+                  const hashes = Array.from(new Set((blobHashes || []).filter(Boolean)));
+                  const mutation =
+                    isHost && hashes.length > 0
+                      ? `mutation { leaveRoom(blobHashes: ${JSON.stringify(hashes)}) }`
+                      : `mutation { leaveRoom }`;
+                  await application.query(JSON.stringify({ query: mutation }));
                 } catch {}
               }
               onBackToLobby();

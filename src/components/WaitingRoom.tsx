@@ -5,6 +5,8 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { useLinera } from "./LineraProvider";
 import { FriendsDialog } from "./FriendsDialog";
+import { CharacterAvatar } from "./CharacterAvatar";
+import { getCharacterIdForPlayer, getCharacterPropsById, getSelectedAvatarJson, parseAvatarJson } from "../utils/characters";
 
 interface WaitingRoomProps {
   hostChainId: string;
@@ -23,10 +25,10 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
   const [copied, setCopied] = useState(false);
   const [totalRounds, setTotalRounds] = useState(3);
   const [roundTime, setRoundTime] = useState(80);
-  const [players, setPlayers] = useState<{ id: string; name: string; isHost: boolean }[]>([
-    { id: "local", name: playerName, isHost },
+  const [players, setPlayers] = useState<{ id: string; name: string; isHost: boolean; avatarJson?: string }[]>([
+    { id: "local", name: playerName, isHost, avatarJson: getSelectedAvatarJson() },
   ]);
-  const { application, client, ready } = useLinera();
+  const { application, client, ready, chainId } = useLinera();
 
   const handleCopyChainId = async () => {
     try {
@@ -67,7 +69,7 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
       try {
         try {
           const res = await application.query(
-            '{ "query": "query { room { hostChainId gameState totalRounds secondsPerRound players { chainId name } } }" }'
+            '{ "query": "query { room { hostChainId gameState totalRounds secondsPerRound players { chainId name avatarJson } } }" }'
           );
           const json = typeof res === 'string' ? JSON.parse(res) : res;
           const data = json?.data?.room;
@@ -75,7 +77,7 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
             return;
           }
           if (data.players) {
-            const list = data.players.map((p: any) => ({ id: p.chainId, name: p.name, isHost: p.chainId === hostChainId }));
+            const list = data.players.map((p: any) => ({ id: p.chainId, name: p.name, isHost: p.chainId === hostChainId, avatarJson: p.avatarJson }));
             const merged = list.length ? list : [{ id: "local", name: playerName, isHost: isHost }];
             setPlayers(merged);
           }
@@ -142,7 +144,13 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
             <div className="divide-y-2 divide-black">
               {players.map((player) => (
                 <div key={player.id} className="px-4 py-3 flex items-center justify-between">
-                  <span>{player.name}</span>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <CharacterAvatar
+                      props={parseAvatarJson(player.avatarJson || "") || getCharacterPropsById(getCharacterIdForPlayer(player.id, chainId || ""))}
+                      className="w-10 h-10 flex items-center justify-center"
+                    />
+                    <span className="truncate">{player.name}</span>
+                  </div>
                   {player.isHost && (
                     <span className="text-xs bg-red-500 text-white px-2 py-1 rounded">HOST</span>
                   )}

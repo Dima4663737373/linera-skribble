@@ -73,11 +73,11 @@ impl Contract for DoodleGameContract {
 
     async fn execute_operation(&mut self, operation: Operation) -> () {
         match operation {
-            Operation::CreateRoom { host_name } => {
+            Operation::CreateRoom { host_name, avatar_json } => {
                 let host_chain_id = self.runtime.chain_id().to_string();
                 let timestamp = self.runtime.system_time().micros().to_string();
                 
-                let room = doodle_game::GameRoom::new(host_chain_id.clone(), host_name.clone(), timestamp);
+                let room = doodle_game::GameRoom::new(host_chain_id.clone(), host_name.clone(), avatar_json, timestamp);
                 self.state.room.set(Some(room.clone()));
                 
                 // HOST: Subscribe to self (host is also a player)
@@ -86,7 +86,7 @@ impl Contract for DoodleGameContract {
                 eprintln!("[CREATE_ROOM] Room created by host '{}'", host_name);
             }
 
-            Operation::JoinRoom { host_chain_id, player_name } => {
+            Operation::JoinRoom { host_chain_id, player_name, avatar_json } => {
                 eprintln!("[JOIN_ROOM] Sending join request to host chain '{}' from player '{}'", host_chain_id, player_name);
                 
                 if let Ok(target_chain) = host_chain_id.parse() {
@@ -94,6 +94,7 @@ impl Contract for DoodleGameContract {
                     let message = doodle_game::CrossChainMessage::JoinRequest {
                         player_chain_id: self.runtime.chain_id(),
                         player_name,
+                        avatar_json,
                     };
                     
                     self.runtime.send_message(target_chain, message);
@@ -279,19 +280,15 @@ impl Contract for DoodleGameContract {
                         
                         eprintln!("[END_MATCH] Starting room deletion process. Host: {}, Players: {}", room_host, player_count);
                         
-                        // 4. ARCHIVE ROOM (before deletion)
+                        let mut archived_list = self.state.archived_rooms.get().clone();
+                        let archive_number = archived_list.len() + 1;
                         let archived = ArchivedRoom {
-                            room_id: room.room_id.clone(),
+                            room_id: format!("{}#{}", room.room_id, archive_number),
                             blob_hashes: room.blob_hashes.clone(),
                             timestamp: timestamp.clone(),
                         };
-                        
-                        let mut archived_list = self.state.archived_rooms.get().clone();
-                        // Check for duplicates before adding
-                        if !archived_list.iter().any(|r| r.room_id == archived.room_id) {
-                            archived_list.push(archived.clone());
-                            self.state.archived_rooms.set(archived_list);
-                        }
+                        archived_list.push(archived.clone());
+                        self.state.archived_rooms.set(archived_list);
 
                         // 1. FIRST: Send room deletion message to ALL players (with archive data)
                         eprintln!("[END_MATCH] Sending RoomDeleted with Archive to {} players", room.players.len());
@@ -357,18 +354,17 @@ impl Contract for DoodleGameContract {
                      }
 
                      let timestamp = self.runtime.system_time().micros().to_string();
+                     let mut archives = self.state.archived_rooms.get().clone();
+                     let archive_number = archives.len() + 1;
                      let archived_room = ArchivedRoom {
-                         room_id: room.host_chain_id.clone(),
+                         room_id: format!("{}#{}", room.room_id, archive_number),
                          blob_hashes: final_hashes,
                          timestamp: timestamp.clone(), 
                      };
                      
                      // Store Archive Locally
-                     let mut archives = self.state.archived_rooms.get().clone();
-                     if !archives.iter().any(|r| r.room_id == archived_room.room_id) {
-                        archives.push(archived_room.clone());
-                        self.state.archived_rooms.set(archives);
-                     }
+                     archives.push(archived_room.clone());
+                     self.state.archived_rooms.set(archives);
 
                     let msg = CrossChainMessage::RoomDeleted { 
                         timestamp: timestamp.clone(),
@@ -487,7 +483,7 @@ impl Contract for DoodleGameContract {
                 }
             }
             
-            Operation::AcceptInvite { host_chain_id, player_name } => {
+            Operation::AcceptInvite { host_chain_id, player_name, avatar_json } => {
                  let mut invitations = self.state.room_invitations.get().clone();
                  if let Some(pos) = invitations.iter().position(|inv| inv.host_chain_id == host_chain_id) {
                      let invite = &invitations[pos];
@@ -505,6 +501,7 @@ impl Contract for DoodleGameContract {
                              let message = CrossChainMessage::JoinRequest {
                                  player_chain_id: self.runtime.chain_id(),
                                  player_name,
+                                 avatar_json,
                              };
                              self.runtime.send_message(target_chain, message);
                          }
@@ -528,7 +525,7 @@ impl Contract for DoodleGameContract {
 
     async fn execute_message(&mut self, message: Self::Message) {
         match message {
-            doodle_game::CrossChainMessage::JoinRequest { player_chain_id, player_name } => {
+            doodle_game::CrossChainMessage::JoinRequest { player_chain_id, player_name, avatar_json } => {
                 eprintln!("[JOIN_REQUEST] Received join request from player '{}' on chain {:?}", player_name, player_chain_id);
                 
                 if let Some(mut room) = self.state.room.get().clone() {
@@ -536,6 +533,7 @@ impl Contract for DoodleGameContract {
                     let player = Player {
                         chain_id: player_chain_id.to_string(),
                         name: player_name.clone(),
+                        avatar_json,
                         score: 0,
                         has_guessed: false,
                     };

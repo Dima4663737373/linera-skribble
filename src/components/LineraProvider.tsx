@@ -33,12 +33,21 @@ export function LineraProvider({ children }: { children: ReactNode }) {
         throw new Error('Missing Linera env configuration');
       }
 
-      const generated = Wallet.createRandom();
-      const phrase = generated.mnemonic?.phrase;
-      if (!phrase) throw new Error('Failed to generate mnemonic');
-      localStorage.setItem('linera_mnemonic', phrase);
+      let mnemonic: string | null = null;
+      try {
+        mnemonic = localStorage.getItem('linera_mnemonic');
+      } catch {}
+      if (!mnemonic) {
+        const generated = Wallet.createRandom();
+        const phrase = generated.mnemonic?.phrase;
+        if (!phrase) throw new Error('Failed to generate mnemonic');
+        mnemonic = phrase;
+        try {
+          localStorage.setItem('linera_mnemonic', mnemonic);
+        } catch {}
+      }
 
-      const signer = linera.signer.PrivateKey.fromMnemonic(phrase);
+      const signer = linera.signer.PrivateKey.fromMnemonic(mnemonic);
       const faucet = new linera.Faucet(faucetUrl);
       const owner = signer.address();
 

@@ -32,6 +32,7 @@ db.serialize(() => {
 // Store active drawing sessions by room ID
 // Each room is a Map<WebSocket, { clientId, userId }>
 const rooms = new Map();
+const roomWordCache = new Map();
 
 console.log(`🎨 Drawing WebSocket server started on port ${PORT}`);
 
@@ -69,11 +70,47 @@ wss.on('connection', (ws) => {
           });
           break;
 
+        case 'set_word': {
+          const roomId = data.roomId || currentRoom;
+          const word = typeof data.word === 'string' ? data.word.trim() : '';
+          const round = Number.isFinite(Number(data.round)) ? Number(data.round) : null;
+          const drawerId = data.drawerId || clientId;
+          const turnId = typeof data.turnId === 'string' ? data.turnId.trim() : '';
+          if (roomId && word) {
+            roomWordCache.set(roomId, {
+              word,
+              round,
+              drawerId,
+              turnId: turnId || null,
+              receivedAt: Date.now(),
+            });
+          }
+          break;
+        }
+
         case 'publish_blob':
           let tempFile;
 
           if (data.payload) {
             // Enriched blob (JSON)
+            if (currentRoom && data.payload && typeof data.payload === 'object') {
+              const cached = roomWordCache.get(currentRoom);
+              const meta = (data.payload && data.payload.meta && typeof data.payload.meta === 'object') ? data.payload.meta : null;
+              if (cached && meta) {
+                const metaWord = typeof meta.word === 'string' ? meta.word.trim() : '';
+                const metaRound = Number.isFinite(Number(meta.round)) ? Number(meta.round) : null;
+                const roundMatches = cached.round === null || metaRound === null || cached.round === metaRound;
+                const metaDrawerId = typeof meta.drawerId === 'string' ? meta.drawerId.trim() : '';
+                const drawerMatches = !cached.drawerId || !metaDrawerId || cached.drawerId === metaDrawerId;
+                const metaTurnId = typeof meta.turnId === 'string' ? meta.turnId.trim() : '';
+                const turnMatches = !cached.turnId || !metaTurnId || cached.turnId === metaTurnId;
+                const matches = drawerMatches && roundMatches && turnMatches;
+                if (!metaWord && matches) {
+                  meta.word = cached.word;
+                }
+              }
+            }
+
             tempFile = path.join(__dirname, `temp_${Date.now()}.json`);
             fs.writeFileSync(tempFile, JSON.stringify(data.payload));
             console.log(`Saved temp JSON payload to ${tempFile}`);
@@ -113,6 +150,16 @@ wss.on('connection', (ws) => {
                 const hash = match[1];
                 console.log(`Blob published: ${hash}`);
                 ws.send(JSON.stringify({ type: 'blob_published', hash: hash }));
+
+                if (currentRoom && data.payload && data.payload.meta && typeof data.payload.meta === 'object') {
+                  const metaWord = typeof data.payload.meta.word === 'string' ? data.payload.meta.word.trim() : '';
+                  if (metaWord) {
+                    const cached = roomWordCache.get(currentRoom);
+                    if (cached && cached.word === metaWord) {
+                      roomWordCache.delete(currentRoom);
+                    }
+                  }
+                }
 
                 // AUTO-SAVE HISTORY FOR ALL USERS IN THE ROOM
                 if (currentRoom && rooms.has(currentRoom)) {

@@ -1,11 +1,14 @@
 import { Crown, Pencil } from "lucide-react";
 import type { Player } from "./Game";
+import { CharacterAvatar } from "./CharacterAvatar";
+import { getCharacterIdForPlayer, getCharacterPropsById, parseAvatarJson } from "../utils/characters";
 
 interface PlayersListProps {
   players: Player[];
+  localPlayerId: string;
 }
 
-export function PlayersList({ players }: PlayersListProps) {
+export function PlayersList({ players, localPlayerId }: PlayersListProps) {
   const sortedPlayers = [...players].sort((a, b) => b.score - a.score);
   const topPlayer = sortedPlayers[0];
 
@@ -29,6 +32,11 @@ export function PlayersList({ players }: PlayersListProps) {
               )}
               {player.isDrawing && <Pencil className="w-4 h-4" />}
             </div>
+
+            <CharacterAvatar
+              props={parseAvatarJson(player.avatarJson || "") || getCharacterPropsById(getCharacterIdForPlayer(player.id, localPlayerId))}
+              className="w-10 h-10 flex items-center justify-center"
+            />
 
             <div className="flex-1 min-w-0">
               <div className="truncate">{player.name}</div>
