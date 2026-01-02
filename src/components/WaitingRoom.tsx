@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Users, Copy, Check, Play, Settings } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -25,10 +25,13 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
   const [copied, setCopied] = useState(false);
   const [totalRounds, setTotalRounds] = useState(3);
   const [roundTime, setRoundTime] = useState(80);
-  const [players, setPlayers] = useState<{ id: string; name: string; isHost: boolean; avatarJson?: string }[]>([
+  const [players, setPlayers] = useState<{ id: string; name: string; isHost: boolean; status?: string; avatarJson?: string }[]>([
     { id: "local", name: playerName, isHost, avatarJson: getSelectedAvatarJson() },
   ]);
   const { application, client, ready, chainId } = useLinera();
+  const hasSeenRoomRef = useRef(false);
+  const pendingBackToLobbyTimeoutRef = useRef<number | null>(null);
+  const aliveRef = useRef(true);
 
   const handleCopyChainId = async () => {
     try {
@@ -55,6 +58,7 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
 
   useEffect(() => {
     if (!client || !application || !ready) return;
+    aliveRef.current = true;
 
     let inFlight = false;
     let pending = false;
@@ -69,17 +73,68 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
       try {
         try {
           const res = await application.query(
-            '{ "query": "query { room { hostChainId gameState totalRounds secondsPerRound players { chainId name avatarJson } } }" }'
+            '{ "query": "query { room { hostChainId gameState totalRounds secondsPerRound players { chainId name avatarJson status } } }" }'
           );
+          if (!aliveRef.current) return;
           const json = typeof res === 'string' ? JSON.parse(res) : res;
           const data = json?.data?.room;
-          if (!data) {
+          const matchesHost = data?.hostChainId && String(data.hostChainId).trim() === String(hostChainId).trim();
+          const isInvalid = !data || !matchesHost;
+
+          if (isInvalid) {
+            if (!hasSeenRoomRef.current) return;
+            if (pendingBackToLobbyTimeoutRef.current) return;
+            pendingBackToLobbyTimeoutRef.current = window.setTimeout(async () => {
+              pendingBackToLobbyTimeoutRef.current = null;
+              if (!aliveRef.current) return;
+              if (!application || !ready) return;
+              try {
+                const retryRes = await application.query(
+                  '{ "query": "query { room { hostChainId gameState totalRounds secondsPerRound players { chainId name avatarJson status } } }" }'
+                );
+                if (!aliveRef.current) return;
+                const retryJson = typeof retryRes === "string" ? JSON.parse(retryRes) : retryRes;
+                const retryData = retryJson?.data?.room;
+                const retryMatchesHost = retryData?.hostChainId && String(retryData.hostChainId).trim() === String(hostChainId).trim();
+                if (retryData && retryMatchesHost) {
+                  const retryGameState = String(retryData?.gameState || "");
+                  if (
+                    [
+                      "ChoosingDrawer",
+                      "WaitingForWord",
+                      "Drawing",
+                      "CHOOSING_DRAWER",
+                      "WAITING_FOR_WORD",
+                      "DRAWING",
+                    ].includes(retryGameState)
+                  ) {
+                    const settings = { totalRounds: retryData.totalRounds ?? totalRounds, roundTime: retryData.secondsPerRound ?? roundTime };
+                    if (aliveRef.current) onStartGame(settings);
+                  }
+                  return;
+                }
+              } catch {}
+              if (aliveRef.current) onBackToLobby();
+            }, 2500);
             return;
           }
+
+          hasSeenRoomRef.current = true;
+          if (pendingBackToLobbyTimeoutRef.current) {
+            clearTimeout(pendingBackToLobbyTimeoutRef.current);
+            pendingBackToLobbyTimeoutRef.current = null;
+          }
+
           if (data.players) {
-            const list = data.players.map((p: any) => ({ id: p.chainId, name: p.name, isHost: p.chainId === hostChainId, avatarJson: p.avatarJson }));
+            const list = data.players.map((p: any) => ({
+              id: p.chainId,
+              name: p.name,
+              isHost: p.chainId === hostChainId,
+              status: typeof p.status === "string" ? p.status : undefined,
+              avatarJson: p.avatarJson,
+            }));
             const merged = list.length ? list : [{ id: "local", name: playerName, isHost: isHost }];
-            setPlayers(merged);
+            if (aliveRef.current) setPlayers(merged);
           }
           if (
             data.gameState &&
@@ -93,7 +148,7 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
             ].includes(data.gameState)
           ) {
             const settings = { totalRounds: data.totalRounds ?? totalRounds, roundTime: data.secondsPerRound ?? roundTime };
-            onStartGame(settings);
+            if (aliveRef.current) onStartGame(settings);
           }
         } catch {}
       } finally {
@@ -112,8 +167,17 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
     const unsubscribe = (client as any).onNotification?.(handleNotification);
 
     poll();
+    const intervalId = window.setInterval(() => {
+      poll();
+    }, 1000);
 
     return () => {
+      aliveRef.current = false;
+      clearInterval(intervalId);
+      if (pendingBackToLobbyTimeoutRef.current) {
+        clearTimeout(pendingBackToLobbyTimeoutRef.current);
+        pendingBackToLobbyTimeoutRef.current = null;
+      }
       if (typeof unsubscribe === 'function') {
         try { unsubscribe(); } catch {}
       } else {
@@ -136,27 +200,33 @@ export function WaitingRoom({ hostChainId, playerName, isHost, onStartGame, onBa
 
         <div className="grid md:grid-cols-2 gap-6">
           {/* Players List */}
-          <div className="bg-white border-2 border-black rounded-lg overflow-hidden">
-            <div className="bg-black text-white px-4 py-3 flex items-center justify-between">
-              <h2>Players ({players.length})</h2>
-              <Users className="w-5 h-5" />
-            </div>
-            <div className="divide-y-2 divide-black">
-              {players.map((player) => (
-                <div key={player.id} className="px-4 py-3 flex items-center justify-between">
+            <div className="bg-white border-2 border-black rounded-lg overflow-hidden">
+              <div className="bg-black text-white px-4 py-3 flex items-center justify-between">
+                <h2>Players ({players.length})</h2>
+                <Users className="w-5 h-5" />
+              </div>
+              <div className="divide-y-2 divide-black">
+              {players.map((player) => {
+                const isLeft = String(player.status || "").toLowerCase() === "left";
+                return (
+                <div key={player.id} className={`px-4 py-3 flex items-center justify-between ${isLeft ? "opacity-50" : ""}`}>
                   <div className="flex items-center gap-3 min-w-0">
                     <CharacterAvatar
                       props={parseAvatarJson(player.avatarJson || "") || getCharacterPropsById(getCharacterIdForPlayer(player.id, chainId || ""))}
                       className="w-10 h-10 flex items-center justify-center"
                     />
-                    <span className="truncate">{player.name}</span>
+                    <span className="truncate">
+                      {player.name}
+                      {isLeft ? " (left)" : ""}
+                    </span>
                   </div>
                   {player.isHost && (
                     <span className="text-xs bg-red-500 text-white px-2 py-1 rounded">HOST</span>
                   )}
                 </div>
-              ))}
-            </div>
+                );
+              })}
+              </div>
 
             {/* Chain ID */}
             <div className="p-4 border-t-2 border-black bg-black/5">

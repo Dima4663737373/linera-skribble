@@ -30,6 +30,8 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 ) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const snapshotTimeoutRef = useRef<number | null>(null);
+  const isDrawingRef = useRef(false);
   const [isMouseDown, setIsMouseDown] = useState(false);
   const [lastPoint, setLastPoint] = useState<Point | null>(null);
   const [startPoint, setStartPoint] = useState<Point | null>(null);
@@ -38,6 +40,10 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const [currentTool, setCurrentTool] = useState<Tool>("brush");
   const [history, setHistory] = useState<string[]>([]);
   const [tempCanvas, setTempCanvas] = useState<string>("");
+
+  useEffect(() => {
+    isDrawingRef.current = isDrawing;
+  }, [isDrawing]);
 
   // Extended color palette
   const colors = [
@@ -51,27 +57,58 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const clampSize = (n: number) => Math.max(1, Math.floor(n));
 
-    // Set canvas size
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width;
-    canvas.height = rect.height;
+    const resizeToDisplaySize = () => {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
 
-    // Fill with white background
-    ctx.fillStyle = "#FFFFFF";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const nextW = clampSize(rect.width);
+      const nextH = clampSize(rect.height);
+      if (canvas.width === nextW && canvas.height === nextH) return;
 
-    // Load existing canvas data
-    if (canvasData) {
+      let snapshot = "";
+      try {
+        snapshot = canvas.toDataURL("image/jpeg", 0.7);
+      } catch {}
+
+      canvas.width = nextW;
+      canvas.height = nextH;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const ws = wsRef.current;
+      if (!isDrawingRef.current && ws && ws.readyState === WebSocket.OPEN && roomId) {
+        try { ws.send(JSON.stringify({ type: "request_sync", roomId })); } catch {}
+      }
+
+      const src = snapshot && snapshot !== "data:,"
+        ? snapshot
+        : (canvasData ? String(canvasData) : "");
+      if (!src) return;
+
       const img = new Image();
       img.onload = () => {
-        ctx.drawImage(img, 0, 0);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        onCanvasChange(canvas.toDataURL());
       };
-      img.src = canvasData;
-    }
-  }, []);
+      img.src = src;
+    };
+
+    resizeToDisplaySize();
+
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => resizeToDisplaySize()) : null;
+    if (ro) ro.observe(canvas);
+    window.addEventListener("resize", resizeToDisplaySize);
+
+    return () => {
+      if (ro) ro.disconnect();
+      window.removeEventListener("resize", resizeToDisplaySize);
+    };
+  }, [canvasData, onCanvasChange, roomId]);
 
   // React to external blank canvasData to force local clear (e.g., drawer change)
   useEffect(() => {
@@ -117,6 +154,10 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             roomId,
             clientId: clientId || 'anon',
           }));
+          ws?.send(JSON.stringify({
+            type: 'request_sync',
+            roomId,
+          }));
         } catch { }
       };
 
@@ -124,12 +165,50 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         if (!active) return;
         try {
           const msg = JSON.parse(evt.data);
-          if (msg.type === 'draw') {
-            drawNetworkLine({ x: msg.prevX, y: msg.prevY }, { x: msg.x, y: msg.y }, msg.color, msg.lineWidth);
+          if (msg.type === 'joined') {
+            try { ws?.send(JSON.stringify({ type: 'request_sync', roomId })); } catch { }
+          } else if (msg.type === 'sync') {
+            const canvas = canvasRef.current;
+            const ctx = canvas?.getContext("2d");
+            if (!canvas || !ctx || !msg.image) return;
+            const img = new Image();
+            img.onload = () => {
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              ctx.fillStyle = "#FFFFFF";
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              onCanvasChange(canvas.toDataURL());
+            };
+            img.src = msg.image;
+          } else if (msg.type === 'sync_clear') {
+            clearCanvasLocal();
+          } else if (msg.type === 'draw') {
+            const canvas = canvasRef.current;
+            const w = canvas?.width ?? 1;
+            const h = canvas?.height ?? 1;
+            const minDim = Math.max(1, Math.min(w, h));
+            const clamp01 = (v: any) => Math.max(0, Math.min(1, Number(v) || 0));
+            const from = (msg.nprevX !== undefined && msg.nprevY !== undefined)
+              ? { x: clamp01(msg.nprevX) * w, y: clamp01(msg.nprevY) * h }
+              : { x: Number(msg.prevX) || 0, y: Number(msg.prevY) || 0 };
+            const to = (msg.nx !== undefined && msg.ny !== undefined)
+              ? { x: clamp01(msg.nx) * w, y: clamp01(msg.ny) * h }
+              : { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
+            const width = (msg.lineWidthN !== undefined)
+              ? Math.max(1, clamp01(msg.lineWidthN) * minDim)
+              : (Number(msg.lineWidth) || 1);
+            drawNetworkLine(from, to, msg.color, width);
           } else if (msg.type === 'clear') {
             clearCanvasLocal();
           } else if (msg.type === 'fill') {
-            floodFill({ x: msg.x, y: msg.y }, msg.color);
+            const canvas = canvasRef.current;
+            const w = canvas?.width ?? 1;
+            const h = canvas?.height ?? 1;
+            const clamp01 = (v: any) => Math.max(0, Math.min(1, Number(v) || 0));
+            const p = (msg.nx !== undefined && msg.ny !== undefined)
+              ? { x: clamp01(msg.nx) * w, y: clamp01(msg.ny) * h }
+              : { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
+            floodFill(p, msg.color);
             saveToHistory();
           } else if (msg.type === 'undo') {
             undo();
@@ -153,6 +232,10 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
     return () => {
       active = false;
+      if (snapshotTimeoutRef.current) {
+        clearTimeout(snapshotTimeoutRef.current);
+        snapshotTimeoutRef.current = null;
+      }
       const cur = wsRef.current;
       if (cur) {
         // Send leave message but give it a moment? No, just close.
@@ -162,6 +245,21 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       }
     };
   }, [roomId, clientId]);
+
+  const scheduleSnapshotSend = () => {
+    if (!isDrawingRef.current) return;
+    if (snapshotTimeoutRef.current) return;
+    snapshotTimeoutRef.current = window.setTimeout(() => {
+      snapshotTimeoutRef.current = null;
+      const ws = wsRef.current;
+      const canvas = canvasRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN || !roomId || !clientId || !canvas) return;
+      try {
+        const image = canvas.toDataURL("image/jpeg", 0.7);
+        ws.send(JSON.stringify({ type: 'snapshot', roomId, drawerId: clientId, image }));
+      } catch { }
+    }, 200);
+  };
 
   const saveToHistory = () => {
     const canvas = canvasRef.current;
@@ -221,12 +319,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   // Expose imperative API to parent
   useImperativeHandle(ref, () => ({
     clearCanvas: () => {
-      const canvas = canvasRef.current;
-      const ctx = canvas?.getContext('2d');
-      if (canvas && ctx) {
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-      }
+      clearCanvas();
     },
     getDataURL: () => {
       return canvasRef.current?.toDataURL("image/jpeg", 0.8) || "";
@@ -470,12 +563,19 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const broadcastFill = (point: Point, color: string) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || !roomId || !clientId) return;
+    const canvas = canvasRef.current;
+    const w = canvas?.width ?? 1;
+    const h = canvas?.height ?? 1;
+    const nx = w ? point.x / w : 0;
+    const ny = h ? point.y / h : 0;
     const payload = {
       type: 'fill',
       roomId,
       clientId,
       x: point.x,
       y: point.y,
+      nx,
+      ny,
       color,
       drawerId: clientId,
     };
@@ -485,6 +585,15 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const broadcastSegment = (from: Point, to: Point) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || !roomId || !clientId) return;
+    const canvas = canvasRef.current;
+    const w = canvas?.width ?? 1;
+    const h = canvas?.height ?? 1;
+    const minDim = Math.max(1, Math.min(w, h));
+    const nx = w ? to.x / w : 0;
+    const ny = h ? to.y / h : 0;
+    const nprevX = w ? from.x / w : 0;
+    const nprevY = h ? from.y / h : 0;
+    const lineWidthN = brushSize / minDim;
     const payload = {
       type: 'draw',
       roomId,
@@ -493,8 +602,13 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       y: to.y,
       prevX: from.x,
       prevY: from.y,
+      nx,
+      ny,
+      nprevX,
+      nprevY,
       color: currentTool === 'eraser' ? '#FFFFFF' : currentColor,
       lineWidth: brushSize,
+      lineWidthN,
       drawerId: clientId,
     };
     try { ws.send(JSON.stringify(payload)); } catch { }
@@ -532,6 +646,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       floodFill(point, currentColor);
       saveToHistory();
       broadcastFill(point, currentColor);
+      scheduleSnapshotSend();
     } else if (currentTool === "picker") {
       pickColor(point);
     }
@@ -588,6 +703,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (ws && ws.readyState === WebSocket.OPEN && roomId && clientId) {
         try { ws.send(JSON.stringify({ type: 'strokeEnd', roomId, drawerId: clientId })); } catch { }
       }
+      scheduleSnapshotSend();
     }
   };
 
@@ -610,6 +726,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       floodFill(point, currentColor);
       saveToHistory();
       broadcastFill(point, currentColor);
+      scheduleSnapshotSend();
     } else if (currentTool === "picker") {
       pickColor(point);
     }
@@ -622,6 +739,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     if (ws && ws.readyState === WebSocket.OPEN && roomId && clientId) {
       try { ws.send(JSON.stringify({ type: 'undo', roomId, drawerId: clientId })); } catch { }
     }
+    scheduleSnapshotSend();
   };
 
   const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
@@ -674,8 +792,25 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (ws && ws.readyState === WebSocket.OPEN && roomId && clientId) {
         try { ws.send(JSON.stringify({ type: 'strokeEnd', roomId, drawerId: clientId })); } catch { }
       }
+      scheduleSnapshotSend();
     }
   };
+
+  const brushCursor = (() => {
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">` +
+      `<path fill="black" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1.003 1.003 0 0 0 0-1.42L18.37 3.29a1.003 1.003 0 0 0-1.42 0L15.12 5.12l3.75 3.75z"/>` +
+      `</svg>`;
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 2 22, crosshair`;
+  })();
+
+  const cursor = !isDrawing
+    ? "not-allowed"
+    : currentTool === "picker"
+      ? "crosshair"
+      : currentTool === "fill"
+        ? "pointer"
+        : brushCursor;
 
   return (
     <div className="flex-1 flex flex-col gap-4">
@@ -834,15 +969,8 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
-          className={`w-full h-full ${isDrawing
-            ? currentTool === "picker"
-              ? "cursor-crosshair"
-              : currentTool === "fill"
-                ? "cursor-pointer"
-                : "cursor-crosshair"
-            : "cursor-not-allowed"
-            }`}
-          style={{ touchAction: "none" }}
+          className="w-full h-full"
+          style={{ touchAction: "none", cursor }}
         />
       </div>
     </div>

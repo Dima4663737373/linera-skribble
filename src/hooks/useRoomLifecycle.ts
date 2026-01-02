@@ -5,7 +5,7 @@ type RoomData = {
   gameState?: string;
   totalRounds?: number;
   secondsPerRound?: number;
-  players?: Array<{ chainId: string; name: string; avatarJson?: string }>;
+  players?: Array<{ chainId: string; name: string; avatarJson?: string; status?: string }>;
 };
 
 export function useRoomLifecycle(opts: {
@@ -27,7 +27,7 @@ export function useRoomLifecycle(opts: {
     const poll = async () => {
       try {
         const res = await application.query(
-          '{ "query": "query { room { hostChainId gameState totalRounds secondsPerRound players { chainId name avatarJson } } }" }'
+          '{ "query": "query { room { hostChainId gameState totalRounds secondsPerRound players { chainId name avatarJson status } } }" }'
         );
         const json = typeof res === "string" ? JSON.parse(res) : res;
         const data: RoomData | undefined = json?.data?.room;

@@ -5,7 +5,7 @@
 
 mod state;
 
-use doodle_game::{Operation, DoodleGameAbi, Player, GameState, ChatMessage, ArchivedRoom, CrossChainMessage, Invitation};
+use doodle_game::{Operation, DoodleGameAbi, Player, PlayerStatus, GameState, ChatMessage, ArchivedRoom, CrossChainMessage, Invitation};
 use linera_sdk::{
     linera_base_types::{WithContractAbi, StreamName, ChainId},
     views::{RootView, View},
@@ -388,9 +388,6 @@ impl Contract for DoodleGameContract {
                     let current_chain = self.runtime.chain_id();
                     let player_name = room.players.iter().find(|p| p.chain_id == current_chain.to_string()).map(|p| p.name.clone());
 
-                    room.players.retain(|p| p.chain_id != current_chain.to_string());
-                    self.state.room.set(Some(room.clone()));
-
                      // Notify host
                     if let Ok(host_id) = room.host_chain_id.parse::<linera_sdk::linera_base_types::ChainId>() {
                          let msg = CrossChainMessage::PlayerLeft {
@@ -400,6 +397,16 @@ impl Contract for DoodleGameContract {
                          };
                          let _ = self.runtime.send_message(host_id, msg);
                     }
+
+                    let app_id = self.runtime.application_id().forget_abi();
+                    if let Ok(host_chain) = room.host_chain_id.parse() {
+                        let stream = StreamName::from(format!("game_events_{}", room.room_id));
+                        self.runtime.unsubscribe_from_events(host_chain, app_id, stream);
+                    }
+
+                    self.state.room.set(None);
+                    self.state.current_word.set(None);
+                    self.state.subscribed_to_host.set(None);
                 }
             }
 
@@ -536,6 +543,7 @@ impl Contract for DoodleGameContract {
                         avatar_json,
                         score: 0,
                         has_guessed: false,
+                        status: PlayerStatus::Active,
                     };
                     
                     room.add_player(player.clone());
@@ -712,23 +720,29 @@ impl Contract for DoodleGameContract {
                     let app_id = self.runtime.application_id().forget_abi();
                     let stream = StreamName::from(format!("game_events_{}", room.room_id));
                     self.runtime.unsubscribe_from_events(player_chain_id, app_id, stream);
-                    let removed_index = room.players.iter().position(|p| p.chain_id == player_chain_id.to_string());
-                    room.players.retain(|p| p.chain_id != player_chain_id.to_string());
-                    if let Some(idx) = removed_index {
-                        if let Some(current_idx) = room.current_drawer_index {
-                            if current_idx == idx {
-                                room.current_drawer_index = None;
-                                room.game_state = GameState::ChoosingDrawer;
-                                room.word_chosen_at = None;
-                                room.drawer_chosen_at = None;
-                                eprintln!("[PLAYER_LEFT] Current drawer left; resetting drawer selection");
-                            } else if current_idx > idx {
-                                room.current_drawer_index = Some(current_idx - 1);
-                            }
+                    let player_index = room.players.iter().position(|p| p.chain_id == player_chain_id.to_string());
+                    if let Some(idx) = player_index {
+                        if let Some(player) = room.players.get_mut(idx) {
+                            player.status = PlayerStatus::Left;
+                            player.has_guessed = false;
+                        }
+
+                        if room.current_drawer_index == Some(idx) {
+                            room.current_drawer_index = None;
+                            room.game_state = GameState::ChoosingDrawer;
+                            room.word_chosen_at = None;
+                            room.drawer_chosen_at = None;
+                            eprintln!("[PLAYER_LEFT] Current drawer left; resetting drawer selection");
                         }
                     }
                     self.state.room.set(Some(room));
-                    eprintln!("[PLAYER_LEFT] Player removed from room and host unsubscribed from their events");
+                    if let Some(room) = self.state.room.get() {
+                        self.runtime.emit(format!("game_events_{}", room.room_id).into(), &doodle_game::DoodleEvent::PlayerLeft { 
+                            player_chain_id: player_chain_id.to_string(),
+                            timestamp: timestamp.clone(),
+                        });
+                    }
+                    eprintln!("[PLAYER_LEFT] Player marked as left and host unsubscribed from their events");
                 }
             }
             
@@ -815,6 +829,28 @@ impl Contract for DoodleGameContract {
                                         eprintln!("[STREAM_UPDATE] Player '{}' added to local room state", player.name);
                                     } else {
                                         eprintln!("[STREAM_UPDATE] Player '{}' already in room, skipping", player.name);
+                                    }
+                                }
+                            }
+
+                            doodle_game::DoodleEvent::PlayerLeft { player_chain_id, timestamp } => {
+                                eprintln!("[STREAM_UPDATE] Player left event: {} at {}", player_chain_id, timestamp);
+                                if let Some(mut room) = self.state.room.get().clone() {
+                                    let player_index = room.players.iter().position(|p| p.chain_id == player_chain_id);
+                                    if let Some(idx) = player_index {
+                                        if let Some(player) = room.players.get_mut(idx) {
+                                            player.status = PlayerStatus::Left;
+                                            player.has_guessed = false;
+                                        }
+
+                                        if room.current_drawer_index == Some(idx) {
+                                            room.current_drawer_index = None;
+                                            room.game_state = GameState::ChoosingDrawer;
+                                            room.word_chosen_at = None;
+                                            room.drawer_chosen_at = None;
+                                        }
+
+                                        self.state.room.set(Some(room));
                                     }
                                 }
                             }

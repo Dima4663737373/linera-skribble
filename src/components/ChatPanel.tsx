@@ -3,20 +3,28 @@ import { Send } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import type { ChatMessage } from "./Game";
+import { cn } from "./ui/utils";
 
 interface ChatPanelProps {
   messages: ChatMessage[];
   onSendMessage: (message: string) => void;
   isDrawing: boolean;
   hasGuessed: boolean;
+  className?: string;
 }
 
-export function ChatPanel({ messages, onSendMessage, isDrawing, hasGuessed }: ChatPanelProps) {
+export function ChatPanel({ messages, onSendMessage, isDrawing, hasGuessed, className }: ChatPanelProps) {
   const [inputValue, setInputValue] = useState("");
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef<boolean>(true);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!stickToBottomRef.current) return;
+    const el = listRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
+    });
   }, [messages]);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -28,12 +36,21 @@ export function ChatPanel({ messages, onSendMessage, isDrawing, hasGuessed }: Ch
   };
 
   return (
-    <div className="w-80 bg-white border-2 border-black rounded-lg overflow-hidden flex flex-col h-[calc(100vh-180px)]">
+    <div className={cn("w-full bg-white border-2 border-black rounded-lg overflow-hidden flex flex-col", className)}>
       <div className="bg-black text-white px-4 py-3">
         <h2>Chat</h2>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-2">
+      <div
+        ref={listRef}
+        onScroll={() => {
+          const el = listRef.current;
+          if (!el) return;
+          const distance = el.scrollHeight - el.clientHeight - el.scrollTop;
+          stickToBottomRef.current = distance < 64;
+        }}
+        className="flex-1 overflow-y-auto p-4 space-y-2"
+      >
         {messages.map((message) => (
           <div
             key={message.id}
@@ -51,7 +68,6 @@ export function ChatPanel({ messages, onSendMessage, isDrawing, hasGuessed }: Ch
             <span>{message.message}</span>
           </div>
         ))}
-        <div ref={messagesEndRef} />
       </div>
 
       <form onSubmit={handleSubmit} className="p-4 border-t-2 border-black">

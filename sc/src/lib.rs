@@ -20,6 +20,18 @@ impl ServiceAbi for DoodleGameAbi {
 }
 
 // Player structure
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, async_graphql::Enum, PartialEq, Eq)]
+pub enum PlayerStatus {
+    Active,
+    Left,
+}
+
+impl Default for PlayerStatus {
+    fn default() -> Self {
+        PlayerStatus::Active
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, async_graphql::SimpleObject)]
 #[graphql(rename_fields = "camelCase")]
 pub struct Player {
@@ -29,6 +41,8 @@ pub struct Player {
     pub avatar_json: String,
     pub score: u32,
     pub has_guessed: bool,
+    #[serde(default)]
+    pub status: PlayerStatus,
 }
 
 // Drawing will be handled via WebSockets, not smart contracts
@@ -149,6 +163,7 @@ pub enum Operation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DoodleEvent {
     PlayerJoined { player: Player, timestamp: String },
+    PlayerLeft { player_chain_id: String, timestamp: String },
     GameStarted { 
         rounds: u32, 
         seconds_per_round: u32, 
@@ -226,6 +241,7 @@ impl GameRoom {
             avatar_json,
             score: 0,
             has_guessed: false,
+            status: PlayerStatus::Active,
         };
         
         Self {
@@ -245,7 +261,11 @@ impl GameRoom {
     }
 
     pub fn add_player(&mut self, player: Player) {
-        if !self.players.iter().any(|p| p.chain_id == player.chain_id) {
+        if let Some(existing) = self.players.iter_mut().find(|p| p.chain_id == player.chain_id) {
+            existing.name = player.name;
+            existing.avatar_json = player.avatar_json;
+            existing.status = PlayerStatus::Active;
+        } else {
             self.players.push(player);
         }
     }
@@ -264,14 +284,26 @@ impl GameRoom {
     }
 
     pub fn choose_drawer(&mut self, timestamp: String) -> Option<usize> {
-        if self.players.is_empty() {
+        if self.players.iter().all(|p| p.status != PlayerStatus::Active) {
             return None;
         }
 
-        let next_index = match self.current_drawer_index {
+        let players_len = self.players.len();
+        let start_index = match self.current_drawer_index {
             None => 0,
-            Some(current) => (current + 1) % self.players.len(),
+            Some(current) => (current + 1) % players_len,
         };
+
+        let mut next_index: Option<usize> = None;
+        for offset in 0..players_len {
+            let idx = (start_index + offset) % players_len;
+            if matches!(self.players.get(idx).map(|p| p.status), Some(PlayerStatus::Active)) {
+                next_index = Some(idx);
+                break;
+            }
+        }
+
+        let next_index = next_index?;
 
         self.current_drawer_index = Some(next_index);
         self.game_state = GameState::WaitingForWord;
@@ -311,17 +343,16 @@ impl GameRoom {
     }
 
     pub fn has_all_players_drawn_in_round(&self) -> bool {
-        if self.players.is_empty() {
+        if self.players.iter().all(|p| p.status != PlayerStatus::Active) {
             return false;
         }
         
-        // Check if current drawer index would cycle back to 0 (all players have drawn)
         match self.current_drawer_index {
             None => false,
-            Some(current_index) => {
-                let next_index = (current_index + 1) % self.players.len();
-                next_index == 0
-            }
+            Some(current_index) => self.next_active_index_after(current_index)
+                .zip(self.first_active_index())
+                .map(|(next, first)| next == first)
+                .unwrap_or(false),
         }
     }
 
@@ -340,5 +371,23 @@ impl GameRoom {
         // Note: This method is now deprecated as endMatch completely deletes the room
         // instead of just resetting it. This is kept for backward compatibility.
         eprintln!("[DEPRECATED] end_match() called - room should be completely deleted instead");
+    }
+
+    fn first_active_index(&self) -> Option<usize> {
+        self.players.iter().position(|p| p.status == PlayerStatus::Active)
+    }
+
+    fn next_active_index_after(&self, current_index: usize) -> Option<usize> {
+        if self.players.is_empty() {
+            return None;
+        }
+        let players_len = self.players.len();
+        for offset in 1..=players_len {
+            let idx = (current_index + offset) % players_len;
+            if matches!(self.players.get(idx).map(|p| p.status), Some(PlayerStatus::Active)) {
+                return Some(idx);
+            }
+        }
+        None
     }
 }

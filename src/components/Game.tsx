@@ -6,6 +6,7 @@ import { GameHeader } from "./GameHeader";
 import { WordSelector } from "./WordSelector";
 import { GameSettings } from "./WaitingRoom";
 import { useLinera } from "./LineraProvider";
+import { cn } from "./ui/utils";
 
 export interface Player {
   id: string;
@@ -13,6 +14,7 @@ export interface Player {
   score: number;
   isDrawing: boolean;
   hasGuessed: boolean;
+  status?: string;
   avatarJson?: string;
 }
 
@@ -53,6 +55,14 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
   const [wordOptions, setWordOptions] = useState<string[]>([]);
   const [canvasData, setCanvasData] = useState<string>("");
   const canvasCompRef = useRef<CanvasHandle | null>(null);
+  const wordOptionsRef = useRef<string[]>([]);
+  const pendingBackToLobbyTimeoutRef = useRef<number | null>(null);
+  const aliveRef = useRef(true);
+  const layoutRef = useRef<HTMLDivElement | null>(null);
+  const [wideLayout, setWideLayout] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    return window.innerWidth >= 1150;
+  });
 
   // Backend room tracking
   const roomRef = useRef<any>(null);
@@ -70,6 +80,52 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
 
   // Track previous drawer index to detect changes
   const prevDrawerIndexRef = useRef<number | null>(null);
+  const prevTurnKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    wordOptionsRef.current = wordOptions;
+  }, [wordOptions]);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+      if (pendingBackToLobbyTimeoutRef.current) {
+        clearTimeout(pendingBackToLobbyTimeoutRef.current);
+        pendingBackToLobbyTimeoutRef.current = null;
+      }
+      if (autoWordTimeoutRef.current) {
+        clearTimeout(autoWordTimeoutRef.current);
+        autoWordTimeoutRef.current = null;
+      }
+      if (autoDrawerTimeoutRef.current) {
+        clearTimeout(autoDrawerTimeoutRef.current);
+        autoDrawerTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = layoutRef.current;
+    if (!el) return;
+
+    const compute = () => {
+      const w = el.getBoundingClientRect().width;
+      const next = w >= 1150;
+      setWideLayout((prev) => (prev === next ? prev : next));
+    };
+
+    compute();
+
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => compute()) : null;
+    if (ro) ro.observe(el);
+    window.addEventListener("resize", compute);
+
+    return () => {
+      if (ro) ro.disconnect();
+      window.removeEventListener("resize", compute);
+    };
+  }, []);
 
   const cleanupRoomSession = () => {
     if (autoWordTimeoutRef.current) {
@@ -84,65 +140,109 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
     autoDrawerFireKeyRef.current = null;
     chooseDrawerInFlightRef.current = false;
     prevDrawerIndexRef.current = null;
+    prevTurnKeyRef.current = null;
     setShowWordSelector(false);
     setWordOptions([]);
     setCanvasData("");
+  };
+
+  const applyRoomState = (room: any) => {
+    roomRef.current = room;
+
+    const mappedPlayers: Player[] = (room.players ?? []).map((p: any, idx: number) => ({
+      id: p.chainId,
+      name: p.name,
+      avatarJson: p.avatarJson,
+      score: p.score ?? 0,
+      isDrawing: (room.currentDrawerIndex ?? -1) === idx,
+      hasGuessed: !!p.hasGuessed,
+      status: typeof p.status === "string" ? p.status : undefined,
+    }));
+    setPlayers(mappedPlayers);
+
+    setRound(room.currentRound ?? 1);
+
+    const amIDrawer = mappedPlayers[(room.currentDrawerIndex ?? -1)]?.id === chainId;
+    const awaitingWord =
+      (room.gameState === "WaitingForWord" || room.gameState === "WAITING_FOR_WORD") &&
+      room.drawerChosenAt &&
+      !room.wordChosenAt;
+    setShowWordSelector(Boolean(awaitingWord && amIDrawer));
+    if (awaitingWord && amIDrawer && wordOptionsRef.current.length === 0) {
+      setWordOptions(FIXED_WORD_OPTIONS);
+    }
+
+    const msgs: ChatMessage[] = (room.chatMessages ?? [])
+      .filter((m: any) => m && m.playerName && m.message)
+      .map((m: any, idx: number) => ({
+        id: `${idx}-${String(m.playerName ?? "")}-${String(m.message ?? "")}-${m.isCorrectGuess ? 1 : 0}-${String(m.pointsAwarded ?? "")}`,
+        playerId: String(m.playerName ?? `p-${idx}`),
+        playerName: String(m.playerName ?? "Player"),
+        message: String(m.message ?? ""),
+        isCorrect: !!m.isCorrectGuess,
+        timestamp: idx,
+      }));
+    setMessages((prev) => {
+      if (prev.length !== msgs.length) return msgs;
+      for (let i = 0; i < prev.length; i++) {
+        const a = prev[i];
+        const b = msgs[i];
+        if (
+          a.id !== b.id ||
+          a.playerId !== b.playerId ||
+          a.playerName !== b.playerName ||
+          a.message !== b.message ||
+          Boolean(a.isCorrect) !== Boolean(b.isCorrect)
+        ) {
+          return msgs;
+        }
+      }
+      return prev;
+    });
   };
 
   const queryGameState = async () => {
     if (!application || !ready) return;
     try {
       const roomResponse = await application.query(
-        '{ "query": "query { room { hostChainId players { chainId name avatarJson score hasGuessed } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt blobHashes chatMessages { playerName message isCorrectGuess pointsAwarded } } }" }'
+        '{ "query": "query { room { hostChainId players { chainId name avatarJson score hasGuessed status } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt blobHashes chatMessages { playerName message isCorrectGuess pointsAwarded } } }" }'
       );
+      if (!aliveRef.current) return;
       const roomData = JSON.parse(roomResponse);
       const room = roomData.data?.room;
-      if (!room) {
+      const matchesHost = room?.hostChainId && String(room.hostChainId).trim() === String(hostChainId).trim();
+      if (!room || !matchesHost) {
         if (roomRef.current) {
-          cleanupRoomSession();
-          onBackToLobby();
+          if (!pendingBackToLobbyTimeoutRef.current) {
+            pendingBackToLobbyTimeoutRef.current = window.setTimeout(async () => {
+              pendingBackToLobbyTimeoutRef.current = null;
+              if (!aliveRef.current) return;
+              if (!application || !ready) return;
+              try {
+                const retry = await application.query(
+                  '{ "query": "query { room { hostChainId players { chainId name avatarJson score hasGuessed status } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt blobHashes chatMessages { playerName message isCorrectGuess pointsAwarded } } }" }'
+                );
+                if (!aliveRef.current) return;
+                const parsed = JSON.parse(retry);
+                const roomAfter = parsed?.data?.room;
+                const matchesAfter = roomAfter?.hostChainId && String(roomAfter.hostChainId).trim() === String(hostChainId).trim();
+                if (!roomAfter || !matchesAfter) {
+                  cleanupRoomSession();
+                  if (aliveRef.current) onBackToLobby();
+                  return;
+                }
+                applyRoomState(roomAfter);
+              } catch {}
+            }, 2000);
+          }
         }
         return;
       }
-      if (room) {
-        roomRef.current = room;
-        // Players mapping
-        const mappedPlayers: Player[] = room.players.map((p: any, idx: number) => ({
-          id: p.chainId,
-          name: p.name,
-          avatarJson: p.avatarJson,
-          score: p.score ?? 0,
-          isDrawing: (room.currentDrawerIndex ?? -1) === idx,
-          hasGuessed: !!p.hasGuessed,
-        }));
-        setPlayers(mappedPlayers);
-        // No additional host-missing handling; only leave when room becomes null
-        // Round and timers
-        setRound(room.currentRound ?? 1);
-        // Word selection visibility
-        const amIDrawer = mappedPlayers[(room.currentDrawerIndex ?? -1)]?.id === chainId;
-        const awaitingWord = (room.gameState === 'WaitingForWord' || room.gameState === 'WAITING_FOR_WORD') && room.drawerChosenAt && !room.wordChosenAt;
-        setShowWordSelector(Boolean(awaitingWord && amIDrawer));
-        if (awaitingWord && amIDrawer && wordOptions.length === 0) {
-          setWordOptions(FIXED_WORD_OPTIONS);
-        }
-        // Messages mapping (last 20)
-        // Messages mapping (last 20, keeping all if possible)
-        // Note: Contract might truncate, so we take what we get.
-        // Ideally we accumulate messages locally if we want full history, 
-        // but for now we rely on the backend state.
-        const msgs = (room.chatMessages ?? [])
-          .filter((m: any) => m && m.playerName && m.message)
-          .map((m: any, idx: number) => ({
-            id: `${Date.now()}-${idx}`,
-            playerId: m.playerName ?? `p-${idx}`,
-            playerName: m.playerName ?? 'Player',
-            message: m.message ?? '',
-            isCorrect: !!m.isCorrectGuess,
-            timestamp: Date.now(),
-          }));
-        setMessages(msgs);
+      if (pendingBackToLobbyTimeoutRef.current) {
+        clearTimeout(pendingBackToLobbyTimeoutRef.current);
+        pendingBackToLobbyTimeoutRef.current = null;
       }
+      applyRoomState(room);
     } catch { }
   };
 
@@ -185,8 +285,12 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
     const maybeUnsubscribe = (client as any).onNotification?.(handleNotification);
 
     runQuery();
+    const intervalId = window.setInterval(() => {
+      runQuery();
+    }, 1000);
 
     return () => {
+      clearInterval(intervalId);
       if (typeof maybeUnsubscribe === 'function') {
         try { maybeUnsubscribe(); } catch { }
       } else {
@@ -413,28 +517,31 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
   const currentPlayer = players.find((p) => p.id === chainId);
   const isDrawing = currentPlayer?.isDrawing || false;
 
-  // Clear canvas on drawer change while still in drawing state
+  // Clear canvas when a new turn starts (round or drawer change)
   useEffect(() => {
     const room = roomRef.current;
     if (!room) return;
-    const currentDrawerIndex = room.currentDrawerIndex ?? null;
-    const gameState = room.gameState;
-    const prevIndex = prevDrawerIndexRef.current;
-    if (
-      prevIndex !== null &&
-      currentDrawerIndex !== null &&
-      prevIndex !== currentDrawerIndex &&
-      (gameState === 'Drawing' || gameState === 'DRAWING')
-    ) {
-      try {
-        // Clear locally via ref
-        canvasCompRef.current?.clearCanvas();
-      } catch { }
-      // Also reset canvasData so Canvas re-renders clean
+    const currentDrawerIndexRaw = room.currentDrawerIndex;
+    const currentRoundRaw = room.currentRound;
+    const currentDrawerIndex = Number(currentDrawerIndexRaw);
+    const currentRound = Number(currentRoundRaw);
+    if (!Number.isFinite(currentDrawerIndex) || currentDrawerIndex < 0) return;
+    if (!Number.isFinite(currentRound) || currentRound < 1) return;
+
+    const turnKey = `${currentRound}-${currentDrawerIndex}`;
+    const prevKey = prevTurnKeyRef.current;
+
+    if (prevKey && prevKey !== turnKey) {
       setCanvasData("");
+      const drawerId = players[currentDrawerIndex]?.id;
+      if (drawerId && drawerId === chainId) {
+        try { canvasCompRef.current?.clearCanvas(); } catch { }
+      }
     }
+
+    prevTurnKeyRef.current = turnKey;
     prevDrawerIndexRef.current = currentDrawerIndex;
-  }, [players]);
+  }, [players, chainId]);
 
   return (
     <div className="min-h-screen bg-white flex flex-col">
@@ -481,34 +588,60 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
         }}
       />
 
-      <div className="flex-1 flex gap-4 p-4 max-w-[1600px] mx-auto w-full">
-        <PlayersList players={players} localPlayerId={chainId || ""} />
-
-        <div className="flex-1 flex flex-col gap-4">
-          {showWordSelector && isDrawing && (
-            <WordSelector
-              words={wordOptions}
-              onSelect={handleChooseWord}
+      <div className="flex-1 w-full">
+        <div ref={layoutRef} className="mx-auto w-full max-w-[1400px] px-3 sm:px-4 lg:px-6 py-3 sm:py-4">
+          <div
+            className={cn(
+              "flex",
+              wideLayout ? "flex-row items-start gap-4" : "flex-col gap-3 sm:gap-4 max-w-[560px] mx-auto"
+            )}
+          >
+            <PlayersList
+              players={players}
+              localPlayerId={chainId || ""}
+              className={wideLayout ? "w-64 shrink-0" : "w-full"}
             />
-          )}
-          <div style={{ display: (showWordSelector && isDrawing) ? 'none' : 'block' }} className="flex-1">
-            <Canvas
-              ref={canvasCompRef as any}
+
+            <div
+              className={cn(
+                "flex-1 min-w-0 flex flex-col",
+                wideLayout ? "gap-4" : "gap-3 sm:gap-4 w-full"
+              )}
+            >
+              {showWordSelector && isDrawing && (
+                <WordSelector
+                  words={wordOptions}
+                  onSelect={handleChooseWord}
+                />
+              )}
+              <div
+                style={{ display: (showWordSelector && isDrawing) ? 'none' : 'block' }}
+                className={cn("flex-1", wideLayout ? "min-h-[360px]" : "min-h-[280px]")}
+              >
+                <Canvas
+                  ref={canvasCompRef as any}
+                  isDrawing={isDrawing}
+                  onCanvasChange={setCanvasData}
+                  canvasData={canvasData}
+                  roomId={hostChainId}
+                  clientId={chainId || 'local'}
+                />
+              </div>
+            </div>
+
+            <ChatPanel
+              messages={messages}
+              onSendMessage={handleSendMessage}
               isDrawing={isDrawing}
-              onCanvasChange={setCanvasData}
-              canvasData={canvasData}
-              roomId={hostChainId}
-              clientId={chainId || 'local'}
+              hasGuessed={currentPlayer?.hasGuessed || false}
+              className={
+                wideLayout
+                  ? "w-80 shrink-0 h-[calc(100vh-180px)]"
+                  : "w-full h-[280px] sm:h-[320px]"
+              }
             />
           </div>
         </div>
-
-        <ChatPanel
-          messages={messages}
-          onSendMessage={handleSendMessage}
-          isDrawing={isDrawing}
-          hasGuessed={currentPlayer?.hasGuessed || false}
-        />
       </div>
     </div>
   );

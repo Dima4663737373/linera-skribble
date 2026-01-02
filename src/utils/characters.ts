@@ -68,6 +68,8 @@ const buildAvatarProps = (seed: string, isWoman: boolean): AvatarProps => {
     skinTone: pick(skinKeys, seed, "skinTone") as any,
     hairColor: pick(hairColorKeys, seed, "hairColor") as any,
     clothingColor: pick(clothingColorKeys, seed, "clothingColor") as any,
+    faceMaskColor: pick(clothingColorKeys, seed, "faceMaskColor") as any,
+    hatColor: pick(clothingColorKeys, seed, "hatColor") as any,
     lipColor: pick(lipColorKeys, seed, "lipColor") as any,
   };
 };

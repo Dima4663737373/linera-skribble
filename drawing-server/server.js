@@ -33,8 +33,31 @@ db.serialize(() => {
 // Each room is a Map<WebSocket, { clientId, userId }>
 const rooms = new Map();
 const roomWordCache = new Map();
+const roomCanvasState = new Map();
 
 console.log(`🎨 Drawing WebSocket server started on port ${PORT}`);
+
+const setRoomBlank = (roomId, drawerId) => {
+  if (!roomId) return;
+  roomCanvasState.set(roomId, { kind: 'blank', updatedAt: Date.now(), drawerId: drawerId || null });
+};
+
+const setRoomImage = (roomId, image, drawerId) => {
+  if (!roomId) return;
+  if (typeof image !== 'string' || !image) return;
+  roomCanvasState.set(roomId, { kind: 'image', image, updatedAt: Date.now(), drawerId: drawerId || null });
+};
+
+const sendRoomSync = (ws, roomId) => {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !roomId) return;
+  const state = roomCanvasState.get(roomId);
+  if (!state || !state.kind) return;
+  if (state.kind === 'blank') {
+    ws.send(JSON.stringify({ type: 'sync_clear', updatedAt: state.updatedAt, drawerId: state.drawerId || null }));
+  } else if (state.kind === 'image') {
+    ws.send(JSON.stringify({ type: 'sync', image: state.image, updatedAt: state.updatedAt, drawerId: state.drawerId || null }));
+  }
+};
 
 wss.on('connection', (ws) => {
   console.log('New client connected');
@@ -260,6 +283,9 @@ wss.on('connection', (ws) => {
           if (!rooms.has(currentRoom)) {
             rooms.set(currentRoom, new Map()); // Change to Map to store user info
           }
+          if (!roomCanvasState.has(currentRoom)) {
+            setRoomBlank(currentRoom, null);
+          }
 
           // Store connection with user info
           rooms.get(currentRoom).set(ws, { clientId, userId });
@@ -267,7 +293,24 @@ wss.on('connection', (ws) => {
 
           // Send confirmation
           ws.send(JSON.stringify({ type: 'joined', roomId: currentRoom }));
+          sendRoomSync(ws, currentRoom);
           break;
+
+        case 'request_sync': {
+          const roomId = data.roomId || currentRoom;
+          if (roomId) sendRoomSync(ws, roomId);
+          break;
+        }
+
+        case 'snapshot': {
+          const roomId = data.roomId || currentRoom;
+          const drawerId = data.drawerId || clientId;
+          const image = data.image;
+          if (roomId && typeof image === 'string' && image.length > 0) {
+            setRoomImage(roomId, image, drawerId);
+          }
+          break;
+        }
 
         case 'draw':
           // Broadcast drawing data to all clients in the same room
@@ -279,8 +322,13 @@ wss.on('connection', (ws) => {
               y: data.y,
               prevX: data.prevX,
               prevY: data.prevY,
+              nx: data.nx,
+              ny: data.ny,
+              nprevX: data.nprevX,
+              nprevY: data.nprevY,
               color: data.color,
               lineWidth: data.lineWidth,
+              lineWidthN: data.lineWidthN,
               drawerId: data.drawerId,
             };
 
@@ -317,6 +365,8 @@ wss.on('connection', (ws) => {
               type: 'fill',
               x: data.x,
               y: data.y,
+              nx: data.nx,
+              ny: data.ny,
               color: data.color,
               drawerId: data.drawerId,
             };
@@ -330,6 +380,9 @@ wss.on('connection', (ws) => {
           break;
 
         case 'clear':
+          if (currentRoom) {
+            setRoomBlank(currentRoom, data.drawerId || clientId);
+          }
           // Broadcast clear canvas command
           if (currentRoom && rooms.has(currentRoom)) {
             const clients = rooms.get(currentRoom);
