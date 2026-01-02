@@ -77,6 +77,7 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
   const sentGameEndRef = useRef(false);
   const sentWordForTurnRef = useRef<string | null>(null);
   const systemNoticeRef = useRef<{ turnKey: string | null; fired: Record<string, boolean> }>({ turnKey: null, fired: {} });
+  const messageTimesRef = useRef<Record<string, number>>({});
 
   const isHost = roomRef.current?.hostChainId === chainId;
 
@@ -149,6 +150,7 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
     setCurrentWord("");
     setRoomMessages([]);
     setSystemMessages([]);
+    messageTimesRef.current = {};
   };
 
   const applyRoomState = (room: any, currentWordFromQuery?: any) => {
@@ -186,16 +188,22 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
       }
     }
 
+    const baseTs = Date.now();
     const msgs: ChatMessage[] = (room.chatMessages ?? [])
       .filter((m: any) => m && m.playerName && m.message)
-      .map((m: any, idx: number) => ({
-        id: `${idx}-${String(m.playerName ?? "")}-${String(m.message ?? "")}-${m.isCorrectGuess ? 1 : 0}-${String(m.pointsAwarded ?? "")}`,
-        playerId: String(m.playerName ?? `p-${idx}`),
-        playerName: String(m.playerName ?? "Player"),
-        message: String(m.message ?? ""),
-        isCorrect: !!m.isCorrectGuess,
-        timestamp: idx,
-      }));
+      .map((m: any, idx: number) => {
+        const id = `${idx}-${String(m.playerName ?? "")}-${String(m.message ?? "")}-${m.isCorrectGuess ? 1 : 0}-${String(m.pointsAwarded ?? "")}`;
+        const existing = messageTimesRef.current[id];
+        const ts = typeof existing === "number" ? existing : (messageTimesRef.current[id] = baseTs + idx);
+        return {
+          id,
+          playerId: String(m.playerName ?? `p-${idx}`),
+          playerName: String(m.playerName ?? "Player"),
+          message: String(m.message ?? ""),
+          isCorrect: !!m.isCorrectGuess,
+          timestamp: ts,
+        };
+      });
     setRoomMessages((prev) => {
       if (prev.length !== msgs.length) return msgs;
       for (let i = 0; i < prev.length; i++) {
@@ -533,9 +541,9 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
   const currentPlayer = players.find((p) => p.id === chainId);
   const isDrawing = currentPlayer?.isDrawing || false;
   const mergedMessages = useMemo(() => {
-    if (!systemMessages.length) return roomMessages;
-    if (!roomMessages.length) return systemMessages;
-    return [...roomMessages, ...systemMessages];
+    const all = [...roomMessages, ...systemMessages];
+    all.sort((a, b) => (a.timestamp - b.timestamp) || a.id.localeCompare(b.id));
+    return all;
   }, [roomMessages, systemMessages]);
 
   // Clear canvas when a new turn starts (round or drawer change)
@@ -560,6 +568,7 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
       setCanvasData("");
       setSystemMessages([]);
       systemNoticeRef.current = { turnKey, fired: {} };
+      messageTimesRef.current = {};
       const drawerId = players[currentDrawerIndex]?.id;
       const amIDrawer = drawerId && drawerId === chainId;
       if (amIDrawer) {
