@@ -5,11 +5,13 @@ interface GameHeaderProps {
   round: number;
   totalRounds: number;
   timeLeft: number;
+  currentWord?: string;
+  isDrawing?: boolean;
   hostChainId?: string;
   onLeave: () => void;
 }
 
-export function GameHeader({ round, totalRounds, timeLeft, hostChainId, onLeave }: GameHeaderProps) {
+export function GameHeader({ round, totalRounds, timeLeft, currentWord, isDrawing, hostChainId, onLeave }: GameHeaderProps) {
   const [copied, setCopied] = useState(false);
   const [leaving, setLeaving] = useState(false);
 
@@ -32,6 +34,11 @@ export function GameHeader({ round, totalRounds, timeLeft, hostChainId, onLeave 
           <div className="text-white/80">
             Round {round} of {totalRounds}
           </div>
+          {isDrawing && currentWord && (
+            <div className="text-white/80">
+              Word: <span className="text-white">{currentWord}</span>
+            </div>
+          )}
           {hostChainId && (
             <span
               onClick={handleCopyChainId}

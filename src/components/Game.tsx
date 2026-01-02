@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Canvas, CanvasHandle } from "./Canvas";
 import { ChatPanel } from "./ChatPanel";
 import { PlayersList } from "./PlayersList";
@@ -47,7 +47,8 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
   const { client, application, chainId, ready } = useLinera();
 
   const [players, setPlayers] = useState<Player[]>([]);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [roomMessages, setRoomMessages] = useState<ChatMessage[]>([]);
+  const [systemMessages, setSystemMessages] = useState<ChatMessage[]>([]);
   const [currentWord, setCurrentWord] = useState<string>("");
   const [timeLeft, setTimeLeft] = useState<number>(settings.roundTime);
   const [round, setRound] = useState<number>(1);
@@ -75,6 +76,7 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
   const lastBlobPublishRef = useRef<Promise<string> | null>(null);
   const sentGameEndRef = useRef(false);
   const sentWordForTurnRef = useRef<string | null>(null);
+  const systemNoticeRef = useRef<{ turnKey: string | null; fired: Record<string, boolean> }>({ turnKey: null, fired: {} });
 
   const isHost = roomRef.current?.hostChainId === chainId;
 
@@ -144,9 +146,12 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
     setShowWordSelector(false);
     setWordOptions([]);
     setCanvasData("");
+    setCurrentWord("");
+    setRoomMessages([]);
+    setSystemMessages([]);
   };
 
-  const applyRoomState = (room: any) => {
+  const applyRoomState = (room: any, currentWordFromQuery?: any) => {
     roomRef.current = room;
 
     const mappedPlayers: Player[] = (room.players ?? []).map((p: any, idx: number) => ({
@@ -163,6 +168,7 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
     setRound(room.currentRound ?? 1);
 
     const amIDrawer = mappedPlayers[(room.currentDrawerIndex ?? -1)]?.id === chainId;
+    const isDrawingPhase = room.gameState === "Drawing" || room.gameState === "DRAWING";
     const awaitingWord =
       (room.gameState === "WaitingForWord" || room.gameState === "WAITING_FOR_WORD") &&
       room.drawerChosenAt &&
@@ -170,6 +176,14 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
     setShowWordSelector(Boolean(awaitingWord && amIDrawer));
     if (awaitingWord && amIDrawer && wordOptionsRef.current.length === 0) {
       setWordOptions(FIXED_WORD_OPTIONS);
+    }
+    if (!amIDrawer || awaitingWord || !isDrawingPhase) {
+      setCurrentWord("");
+    } else {
+      const next = typeof currentWordFromQuery === "string" ? currentWordFromQuery.trim() : "";
+      if (next) {
+        setCurrentWord((prev) => (prev === next ? prev : next));
+      }
     }
 
     const msgs: ChatMessage[] = (room.chatMessages ?? [])
@@ -182,7 +196,7 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
         isCorrect: !!m.isCorrectGuess,
         timestamp: idx,
       }));
-    setMessages((prev) => {
+    setRoomMessages((prev) => {
       if (prev.length !== msgs.length) return msgs;
       for (let i = 0; i < prev.length; i++) {
         const a = prev[i];
@@ -205,11 +219,12 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
     if (!application || !ready) return;
     try {
       const roomResponse = await application.query(
-        '{ "query": "query { room { hostChainId players { chainId name avatarJson score hasGuessed status } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt blobHashes chatMessages { playerName message isCorrectGuess pointsAwarded } } }" }'
+        '{ "query": "query { currentWord room { hostChainId players { chainId name avatarJson score hasGuessed status } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt blobHashes chatMessages { playerName message isCorrectGuess pointsAwarded } } }" }'
       );
       if (!aliveRef.current) return;
       const roomData = JSON.parse(roomResponse);
       const room = roomData.data?.room;
+      const currentWordFromQuery = roomData.data?.currentWord;
       const matchesHost = room?.hostChainId && String(room.hostChainId).trim() === String(hostChainId).trim();
       if (!room || !matchesHost) {
         if (roomRef.current) {
@@ -220,18 +235,19 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
               if (!application || !ready) return;
               try {
                 const retry = await application.query(
-                  '{ "query": "query { room { hostChainId players { chainId name avatarJson score hasGuessed status } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt blobHashes chatMessages { playerName message isCorrectGuess pointsAwarded } } }" }'
+                  '{ "query": "query { currentWord room { hostChainId players { chainId name avatarJson score hasGuessed status } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt blobHashes chatMessages { playerName message isCorrectGuess pointsAwarded } } }" }'
                 );
                 if (!aliveRef.current) return;
                 const parsed = JSON.parse(retry);
                 const roomAfter = parsed?.data?.room;
+                const currentWordAfter = parsed?.data?.currentWord;
                 const matchesAfter = roomAfter?.hostChainId && String(roomAfter.hostChainId).trim() === String(hostChainId).trim();
                 if (!roomAfter || !matchesAfter) {
                   cleanupRoomSession();
                   if (aliveRef.current) onBackToLobby();
                   return;
                 }
-                applyRoomState(roomAfter);
+                applyRoomState(roomAfter, currentWordAfter);
               } catch {}
             }, 2000);
           }
@@ -242,7 +258,7 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
         clearTimeout(pendingBackToLobbyTimeoutRef.current);
         pendingBackToLobbyTimeoutRef.current = null;
       }
-      applyRoomState(room);
+      applyRoomState(room, currentWordFromQuery);
     } catch { }
   };
 
@@ -516,6 +532,11 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
 
   const currentPlayer = players.find((p) => p.id === chainId);
   const isDrawing = currentPlayer?.isDrawing || false;
+  const mergedMessages = useMemo(() => {
+    if (!systemMessages.length) return roomMessages;
+    if (!roomMessages.length) return systemMessages;
+    return [...roomMessages, ...systemMessages];
+  }, [roomMessages, systemMessages]);
 
   // Clear canvas when a new turn starts (round or drawer change)
   useEffect(() => {
@@ -531,11 +552,23 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
     const turnKey = `${currentRound}-${currentDrawerIndex}`;
     const prevKey = prevTurnKeyRef.current;
 
-    if (prevKey && prevKey !== turnKey) {
+    const isFirstObservedTurn = !prevKey;
+    const isNewTurn = prevKey && prevKey !== turnKey;
+    const isNewGameFirstTurn = isFirstObservedTurn && currentRound === 1;
+
+    if (isNewTurn || isNewGameFirstTurn) {
       setCanvasData("");
+      setSystemMessages([]);
+      systemNoticeRef.current = { turnKey, fired: {} };
       const drawerId = players[currentDrawerIndex]?.id;
-      if (drawerId && drawerId === chainId) {
+      const amIDrawer = drawerId && drawerId === chainId;
+      if (amIDrawer) {
         try { canvasCompRef.current?.clearCanvas(); } catch { }
+      } else if (isNewGameFirstTurn) {
+        const amIHost = String(room.hostChainId ?? "") === String(chainId ?? "");
+        if (amIHost) {
+          try { canvasCompRef.current?.clearCanvas(); } catch { }
+        }
       }
     }
 
@@ -543,12 +576,59 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
     prevDrawerIndexRef.current = currentDrawerIndex;
   }, [players, chainId]);
 
+  useEffect(() => {
+    const room = roomRef.current;
+    if (!room) return;
+    const isDrawingPhase = room.gameState === "Drawing" || room.gameState === "DRAWING";
+    if (!isDrawingPhase || !room.wordChosenAt) return;
+
+    const currentDrawerIndex = Number(room.currentDrawerIndex);
+    const currentRound = Number(room.currentRound);
+    if (!Number.isFinite(currentDrawerIndex) || currentDrawerIndex < 0) return;
+    if (!Number.isFinite(currentRound) || currentRound < 1) return;
+    const turnKey = `${currentRound}-${currentDrawerIndex}`;
+    if (systemNoticeRef.current.turnKey !== turnKey) {
+      systemNoticeRef.current = { turnKey, fired: {} };
+      setSystemMessages([]);
+    }
+
+    const thresholds: Record<number, string> = {
+      30: "30 seconds left in the round.",
+      20: "20 seconds left in the round.",
+      10: "10 seconds left in the round.",
+      5: "5 seconds left in the round.",
+      0: "Time's up!",
+    };
+    const text = thresholds[timeLeft];
+    if (!text) return;
+    const key = String(timeLeft);
+    if (systemNoticeRef.current.fired[key]) return;
+    systemNoticeRef.current.fired[key] = true;
+    setSystemMessages((prev) => {
+      const id = `system-${turnKey}-${timeLeft}`;
+      if (prev.some((m) => m.id === id)) return prev;
+      return [
+        ...prev,
+        {
+          id,
+          playerId: "system",
+          playerName: "System",
+          message: text,
+          isCorrect: false,
+          timestamp: Date.now(),
+        },
+      ];
+    });
+  }, [timeLeft]);
+
   return (
     <div className="min-h-screen bg-white flex flex-col">
       <GameHeader
         round={roomRef.current?.currentRound ?? round}
         totalRounds={roomRef.current?.totalRounds ?? settings.totalRounds}
         timeLeft={timeLeft}
+        currentWord={isDrawing ? currentWord : ""}
+        isDrawing={isDrawing}
         hostChainId={hostChainId}
         onLeave={async () => {
           if (!application || !ready) return;
@@ -630,7 +710,7 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
             </div>
 
             <ChatPanel
-              messages={messages}
+              messages={mergedMessages}
               onSendMessage={handleSendMessage}
               isDrawing={isDrawing}
               hasGuessed={currentPlayer?.hasGuessed || false}
