@@ -226,9 +226,15 @@ export function Game({ playerName, hostChainId, settings, onGameEnd, onBackToLob
   const queryGameState = async () => {
     if (!application || !ready) return;
     try {
+      const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
       const roomResponse = await application.query(
         '{ "query": "query { currentWord room { hostChainId players { chainId name avatarJson score hasGuessed status } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt blobHashes chatMessages { playerName message isCorrectGuess pointsAwarded } } }" }'
       );
+      const endedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+      try {
+        const roomSize = typeof roomResponse === "string" ? roomResponse.length : 0;
+        console.log("[graphql] query room/currentWord", { ms: Math.round(endedAt - startedAt), bytes: roomSize });
+      } catch { }
       if (!aliveRef.current) return;
       const roomData = JSON.parse(roomResponse);
       const room = roomData.data?.room;

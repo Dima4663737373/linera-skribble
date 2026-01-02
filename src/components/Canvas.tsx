@@ -32,6 +32,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const wsRef = useRef<WebSocket | null>(null);
   const snapshotTimeoutRef = useRef<number | null>(null);
   const isDrawingRef = useRef(false);
+  const wsDebugRef = useRef<{ last: Record<string, number> }>({ last: {} });
   const [isMouseDown, setIsMouseDown] = useState(false);
   const [lastPoint, setLastPoint] = useState<Point | null>(null);
   const [startPoint, setStartPoint] = useState<Point | null>(null);
@@ -44,6 +45,21 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   useEffect(() => {
     isDrawingRef.current = isDrawing;
   }, [isDrawing]);
+
+  const logWs = (event: string, details?: any, throttleMs: number = 0) => {
+    const now = Date.now();
+    const key = event;
+    const last = wsDebugRef.current.last[key] ?? 0;
+    if (throttleMs > 0 && now - last < throttleMs) return;
+    wsDebugRef.current.last[key] = now;
+    try {
+      if (details !== undefined) {
+        console.log(`[drawing-ws] ${event}`, details);
+      } else {
+        console.log(`[drawing-ws] ${event}`);
+      }
+    } catch { }
+  };
 
   // Extended color palette
   const colors = [
@@ -132,14 +148,32 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     if (!roomId) return; // ClientId might be 'local' or empty initially, but roomId is key
 
     const wsUrl = (import.meta as any).env?.VITE_DRAWING_SERVER_WS_URL || 'wss://skribbl-linera.xyz/ws';
-    const finalUrl = wsUrl.includes('wss://skribbl-linera.xyz/ws') && window.location.hostname === 'localhost'
-      ? 'ws://localhost:8070'
-      : wsUrl.replace('wss://', 'ws://');
+    const normalizeWsUrl = (raw: string) => {
+      const v = String(raw || "").trim();
+      if (!v) return "";
+      if (v.startsWith("ws://") || v.startsWith("wss://")) return v;
+      if (v.startsWith("http://")) return `ws://${v.slice("http://".length)}`;
+      if (v.startsWith("https://")) return `wss://${v.slice("https://".length)}`;
+      if (v.startsWith("/")) {
+        const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+        return `${scheme}://${window.location.host}${v}`;
+      }
+      return v;
+    };
+
+    const normalizedUrl = normalizeWsUrl(wsUrl);
+    const finalUrl =
+      normalizedUrl.includes('wss://skribbl-linera.xyz/ws') && window.location.hostname === 'localhost'
+        ? 'ws://localhost:7077'
+        : normalizedUrl;
 
     let ws: WebSocket | null = null;
     let active = true;
 
     try {
+      let parsedPort: string | number | null = null;
+      try { parsedPort = new URL(finalUrl).port || null; } catch { parsedPort = null; }
+      logWs("connect_attempt", { finalUrl, roomId, clientId: clientId || "anon", port: parsedPort });
       ws = new WebSocket(finalUrl);
       wsRef.current = ws;
 
@@ -149,11 +183,13 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
           return;
         }
         try {
+          logWs("send_join", { roomId, clientId: clientId || "anon" });
           ws?.send(JSON.stringify({
             type: 'join',
             roomId,
             clientId: clientId || 'anon',
           }));
+          logWs("send_request_sync", { roomId }, 1000);
           ws?.send(JSON.stringify({
             type: 'request_sync',
             roomId,
@@ -166,8 +202,11 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         try {
           const msg = JSON.parse(evt.data);
           if (msg.type === 'joined') {
+            logWs("recv_joined", { roomId }, 1000);
+            logWs("send_request_sync", { roomId }, 1000);
             try { ws?.send(JSON.stringify({ type: 'request_sync', roomId })); } catch { }
           } else if (msg.type === 'sync') {
+            logWs("recv_sync", { roomId, updatedAt: msg.updatedAt ?? null, drawerId: msg.drawerId ?? null }, 1000);
             const canvas = canvasRef.current;
             const ctx = canvas?.getContext("2d");
             if (!canvas || !ctx || !msg.image) return;
@@ -181,6 +220,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             };
             img.src = msg.image;
           } else if (msg.type === 'sync_clear') {
+            logWs("recv_sync_clear", { roomId, updatedAt: msg.updatedAt ?? null, drawerId: msg.drawerId ?? null }, 1000);
             clearCanvasLocal();
           } else if (msg.type === 'draw') {
             const canvas = canvasRef.current;
@@ -199,6 +239,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               : (Number(msg.lineWidth) || 1);
             drawNetworkLine(from, to, msg.color, width);
           } else if (msg.type === 'clear') {
+            logWs("recv_clear", { roomId, drawerId: msg.drawerId ?? null }, 1000);
             clearCanvasLocal();
           } else if (msg.type === 'fill') {
             const canvas = canvasRef.current;
@@ -219,16 +260,16 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       };
 
       ws.onerror = (e) => {
-        console.error("WS Error:", e);
+        logWs("error", { roomId, finalUrl, error: String((e as any)?.message || e) }, 1000);
       };
 
       ws.onclose = () => {
         if (active) {
-          console.log("WS Closed");
+          logWs("closed", { roomId, finalUrl }, 1000);
           wsRef.current = null;
         }
       };
-    } catch (e) { console.error("WS Setup Error:", e); }
+    } catch (e) { logWs("setup_error", { roomId, finalUrl, error: String((e as any)?.message || e) }, 1000); }
 
     return () => {
       active = false;
@@ -238,7 +279,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       }
       const cur = wsRef.current;
       if (cur) {
-        // Send leave message but give it a moment? No, just close.
+        logWs("send_leave", { roomId, clientId: clientId || "anon" }, 1000);
         try { cur.send(JSON.stringify({ type: 'leave', roomId, clientId })); } catch { }
         try { cur.close(); } catch { }
         wsRef.current = null;
@@ -312,6 +353,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     onCanvasChange(canvas.toDataURL());
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN && roomId && clientId) {
+      logWs("send_clear", { roomId, drawerId: clientId }, 1000);
       try { ws.send(JSON.stringify({ type: 'clear', roomId, drawerId: clientId })); } catch { }
     }
   };
@@ -353,9 +395,11 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             meta: metadata,
             timestamp: Date.now()
           };
+          logWs("send_publish_blob", { roomId, drawerId: clientId || "anon", enriched: true }, 1000);
           wsRef.current.send(JSON.stringify({ type: 'publish_blob', payload: payload }));
         } else {
           // Legacy/Simple: send as image
+          logWs("send_publish_blob", { roomId, drawerId: clientId || "anon", enriched: false }, 1000);
           wsRef.current.send(JSON.stringify({ type: 'publish_blob', image: dataUrl }));
         }
 
@@ -372,6 +416,7 @@ export const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       const w = String(word || "").trim();
       if (!w) return;
       try {
+        logWs("send_set_word", { roomId, drawerId: clientId || "anon", round: Number.isFinite(Number(round)) ? Number(round) : null, turnId: turnId ? String(turnId) : null }, 1000);
         ws.send(JSON.stringify({
           type: 'set_word',
           roomId,

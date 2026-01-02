@@ -1,8 +1,123 @@
+import { useEffect, useState } from "react";
 import { X, Clock, Trophy, MessageCircle, Users } from "lucide-react";
 import { createPortal } from "react-dom";
 import { Button } from "./ui/button";
 import { CharacterAvatar } from "./CharacterAvatar";
 import { getCharacterIdForPlayer, getCharacterPropsById, parseAvatarJson } from "../utils/characters";
+
+const isUrlOnly = (text: string) => /^https?:\/\/\S+$/i.test(text.trim());
+
+const isTenorUrl = (url: string) => {
+    try {
+        const u = new URL(url);
+        const host = u.hostname.toLowerCase();
+        return host === "tenor.com" || host.endsWith(".tenor.com");
+    } catch {
+        return false;
+    }
+};
+
+const directTenorMediaUrl = (url: string) => {
+    try {
+        const u = new URL(url);
+        const host = u.hostname.toLowerCase();
+        if (!host.endsWith("tenor.com")) return null;
+        const lowerPath = u.pathname.toLowerCase();
+        if (lowerPath.endsWith(".gif") || lowerPath.endsWith(".mp4") || lowerPath.endsWith(".webm")) return url;
+        return null;
+    } catch {
+        return null;
+    }
+};
+
+const extractTenorId = (url: string) => {
+    try {
+        const u = new URL(url);
+        if (!u.hostname.toLowerCase().endsWith("tenor.com")) return null;
+        const m = u.pathname.match(/(?:-|\/)(\d+)(?:\/)?$/);
+        return m?.[1] ?? null;
+    } catch {
+        return null;
+    }
+};
+
+function TenorInlineGif({ url, apiKey }: { url: string; apiKey?: string }) {
+    const [mediaUrl, setMediaUrl] = useState<string>(() => directTenorMediaUrl(url) ?? "");
+    const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">(() => (mediaUrl ? "ready" : "idle"));
+
+    useEffect(() => {
+        const direct = directTenorMediaUrl(url);
+        if (direct) {
+            setMediaUrl(direct);
+            setStatus("ready");
+            return;
+        }
+
+        const id = extractTenorId(url);
+        if (!id || !apiKey) {
+            setMediaUrl("");
+            setStatus("error");
+            return;
+        }
+
+        let cancelled = false;
+        setStatus("loading");
+        fetch(`https://tenor.googleapis.com/v2/posts?ids=${encodeURIComponent(id)}&key=${encodeURIComponent(apiKey)}&media_filter=gif,tinygif`)
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+            .then((data) => {
+                const result = data?.results?.[0];
+                const nextUrl =
+                    result?.media_formats?.tinygif?.url ||
+                    result?.media_formats?.gif?.url ||
+                    result?.media_formats?.mediumgif?.url ||
+                    "";
+                if (!nextUrl) throw new Error("No media URL");
+                if (cancelled) return;
+                setMediaUrl(nextUrl);
+                setStatus("ready");
+            })
+            .catch(() => {
+                if (cancelled) return;
+                setMediaUrl("");
+                setStatus("error");
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [url, apiKey]);
+
+    if (status === "ready" && mediaUrl) {
+        return (
+            <img
+                src={mediaUrl}
+                alt="GIF"
+                loading="lazy"
+                style={{
+                    display: "block",
+                    marginTop: "4px",
+                    maxWidth: "100%",
+                    width: "220px",
+                    maxHeight: "180px",
+                    objectFit: "cover",
+                    borderRadius: "6px",
+                    border: "1px solid rgba(0,0,0,0.15)",
+                    background: "white",
+                }}
+            />
+        );
+    }
+
+    if (status === "loading") {
+        return <span style={{ color: "#6b7280" }}>Loading GIF…</span>;
+    }
+
+    return (
+        <a href={url} target="_blank" rel="noreferrer" style={{ textDecoration: "underline", wordBreak: "break-all" }}>
+            {url}
+        </a>
+    );
+}
 
 export interface HistoryItem {
     blobHash: string;
@@ -38,6 +153,7 @@ export function HistoryDetailModal({ item, onClose }: HistoryDetailModalProps) {
 
     const players = (item.meta?.players ?? []).slice().sort((a, b) => b.score - a.score);
     const chat = item.meta?.chat ?? [];
+    const tenorApiKey = (import.meta as any).env?.VITE_TENOR_API_KEY as string | undefined;
 
     return createPortal(
         <div
@@ -323,7 +439,14 @@ export function HistoryDetailModal({ item, onClose }: HistoryDetailModalProps) {
                                                             <span style={{ fontWeight: '600', color: '#ef4444' }}>
                                                                 {m.sender}:
                                                             </span>{' '}
-                                                            <span style={{ color: '#374151' }}>{m.text}</span>
+                                                            {(() => {
+                                                                const raw = String(m.text ?? "");
+                                                                const trimmed = raw.trim();
+                                                                if (isUrlOnly(trimmed) && isTenorUrl(trimmed)) {
+                                                                    return <TenorInlineGif url={trimmed} apiKey={tenorApiKey} />;
+                                                                }
+                                                                return <span style={{ color: '#374151', wordBreak: 'break-word' }}>{raw}</span>;
+                                                            })()}
                                                         </div>
                                                     ))}
                                                 </div>

@@ -4,7 +4,7 @@ const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const PORT = 8070;
+const PORT = 7077;
 const wss = new WebSocket.Server({ port: PORT, host: '0.0.0.0' });
 
 // Initialize Database

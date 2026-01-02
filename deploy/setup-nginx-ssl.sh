@@ -47,7 +47,7 @@ upstream vite_dev {
 }
 
 upstream drawing_ws {
-  server 127.0.0.1:8070;
+  server 127.0.0.1:7077;
 }
 
 server {
@@ -232,12 +232,12 @@ systemctl reload nginx
 # Update project configuration: replace localhost with domain
 ENV_FILE="$PROJECT_DIR/.env"
 if [[ -f "$ENV_FILE" ]]; then
-  sed -i -E "s|ws://localhost:8080|wss://$DOMAIN/ws|g" "$ENV_FILE"
+  sed -i -E "s|ws://localhost:7077|wss://$DOMAIN/ws|g" "$ENV_FILE"
 fi
 
 CANVAS_FILE="$PROJECT_DIR/src/components/Canvas.tsx"
 if [[ -f "$CANVAS_FILE" ]]; then
-  sed -i -E "s|ws://localhost:8080|wss://$DOMAIN/ws|g" "$CANVAS_FILE" || true
+  sed -i -E "s|ws://localhost:7077|wss://$DOMAIN/ws|g" "$CANVAS_FILE" || true
 fi
 
 # Install dependencies and build frontend (production)
